@@ -27,6 +27,7 @@ class BreakFinding:
     affected_code: str | None = None
     impact: str | None = None
     override_path: str | None = None
+    review_reason: str | None = None       # only on "Items for review" entries
     raw_text: str = ""
 
 
@@ -34,7 +35,8 @@ class BreakFinding:
 class AnalysisResult:
     result: str | None = None               # BREAKS FOUND / REVIEW / PASS / None
     section_found: bool = False
-    findings: list[BreakFinding] = field(default_factory=list)
+    findings: list[BreakFinding] = field(default_factory=list)  # breaks only
+    review_findings: list[BreakFinding] = field(default_factory=list)
     fallback_hits: list[str] = field(default_factory=list)  # (context blocks)
     pytest_real_break: bool = False
     analyzer_error: bool = False
@@ -84,7 +86,7 @@ def analyze_log(text: str, cfg: AnalysisConfig) -> AnalysisResult:
         m = re.search(cfg.result_line_pattern, result_section, re.M)
         if m:
             out.result = m.group("result")
-        out.findings = _parse_findings(result_section, cfg)
+        out.findings, out.review_findings = _parse_findings(result_section, cfg)
 
     # Fallback break scan when the structured route yielded nothing useful.
     if not out.section_found or (out.result in (None, "BREAKS FOUND") and not out.findings):
@@ -94,26 +96,41 @@ def analyze_log(text: str, cfg: AnalysisConfig) -> AnalysisResult:
     return out
 
 
-def _parse_findings(result_section: str, cfg: AnalysisConfig) -> list[BreakFinding]:
+def _parse_findings(result_section: str, cfg: AnalysisConfig
+                    ) -> tuple[list[BreakFinding], list[BreakFinding]]:
+    """Parse `### N.` entries, split by their `##` parent section:
+    `## Breaks introduced by this PR` -> breaks; `## Items for review` -> review.
+    Entries before any `##` section (preamble) are ignored."""
     header_re = re.compile(cfg.finding_header_pattern)
     field_res = {k: re.compile(v) for k, v in cfg.field_patterns.items()}
     lines = result_section.split("\n")
 
     findings: list[BreakFinding] = []
+    review_findings: list[BreakFinding] = []
     current: BreakFinding | None = None
     raw_buf: list[str] = []
+    current_section: str | None = None      # 'breaks' | 'review' | None
 
     def flush() -> None:
         nonlocal current, raw_buf
         if current is not None:
             current.raw_text = "\n".join(raw_buf).strip("\n")
-            findings.append(current)
+            if current_section == "review":
+                review_findings.append(current)
+            else:
+                findings.append(current)
         current = None
         raw_buf = []
 
     for line in lines:
-        if line.startswith("## "):          # next top-level section of the report
+        if line.startswith("## "):
             flush()
+            if "Breaks introduced" in line:
+                current_section = "breaks"
+            elif "Items for review" in line:
+                current_section = "review"
+            else:
+                current_section = None
             continue
         hm = header_re.match(line)
         if hm:
@@ -137,7 +154,7 @@ def _parse_findings(result_section: str, cfg: AnalysisConfig) -> list[BreakFindi
             raw_buf.append(line)
         # lines before the first header belong to the report preamble: ignored
     flush()
-    return findings
+    return findings, review_findings
 
 
 def _fallback_scan(text: str, cfg: AnalysisConfig) -> list[str]:

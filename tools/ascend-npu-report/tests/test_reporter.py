@@ -12,9 +12,15 @@ def _rec(build: int, pr: int, status: str, result: str = "BREAKS FOUND",
                              affected_code=f"vllm_ascend/x.py:{100 + i}",
                              impact=f"Impact {i + 1} | with pipe")
                 for i in range(n_findings)]
+    review = [BreakFinding(index=1, priority="P2", relation="override",
+                           contract_kind="call_arguments",
+                           vllm_api="vllm/v1/worker/utils.py:KVBlockZeroer.__init__",
+                           affected_code="vllm_ascend/_310p/kv_block_zeroer.py:32",
+                           review_reason="Contract difference needs manual review")]
     analysis = AnalysisResult(result=result,
                               section_found=True,
-                              findings=findings if result == "BREAKS FOUND" else [])
+                              findings=findings if result == "BREAKS FOUND" else [],
+                              review_findings=review)
     analysis.included_in_table = (result == "BREAKS FOUND" and bool(analysis.findings))
     return ReportRecord(
         job_id=f"job-{build}", build_number=build, state=state,
@@ -43,6 +49,10 @@ def test_main_table_only_breaks_and_pr_status(breaks_log):
     assert out.index("**Merged**") < out.index("**Closed**")
     # pipe escaping
     assert "with pipe" in out and "Impact 1 \\| with pipe" in out
+    # Review reason column in both main table and appendix A
+    assert "| Review reason |" in out
+    assert "Contract difference needs manual review" in out
+    assert "待复核项 3 条" in out  # 3 records, each with 1 review finding
 
 
 def test_same_pr_merged_into_one_row(breaks_log):
@@ -118,3 +128,28 @@ def test_report_stats_line_with_dedup():
     assert "共发现 71 次" in out
     assert "仅保留最新一次" in out
     assert "去重后 1 次" in out
+
+
+def test_report_shows_query_window():
+    from datetime import datetime, timezone
+    records = [_rec(300, 55123, "Open")]
+    window = (datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc),
+              datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc))
+    out = render_report("2026-09-04", records, window=window)
+    # window goes into the title line as well
+    assert ("# Ascend NPU Test 失败报告 — 2026-09-03T00:00Z ~ "
+            "2026-09-04T00:00Z") in out
+    assert "查询时间窗：2026-09-03 00:00Z ~ 2026-09-04 00:00Z（UTC）" in out
+    assert "2026-09-03 08:00 ~ 2026-09-04 08:00（北京时间，UTC+8）" in out
+
+
+def test_window_slug_identity():
+    from datetime import datetime, timezone
+    from ascend_report.reporter import window_slug
+    w = (datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc),
+         datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc))
+    assert window_slug(*w) == "20260903T0000Z-20260904T0000Z"
+    # same window -> same slug (overwrite); new window -> different slug
+    assert window_slug(*w) == window_slug(w[0], w[1])
+    assert window_slug(*w) != window_slug(
+        w[0], w[1].replace(hour=12))

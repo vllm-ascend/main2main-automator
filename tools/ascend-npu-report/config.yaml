@@ -23,6 +23,7 @@ analysis:
     affected_code: '^\s*- Affected vllm-ascend code: `(?P<value>.+)`\s*$'
     impact: '^\s*- Compatibility impact: (?P<value>.+)$'
     override_path: '^\s*- vllm-ascend override path: `(?P<value>.+)`\s*$'
+    review_reason: '^\s*- Review reason: (?P<value>.+)$'
   pytest_fail_patterns:
     real_break: 'this vLLM PR introduces an interface break in vllm-ascend'
     analyzer_error: 'interface analysis failed with exit code'
@@ -33,7 +34,9 @@ github:
   repo: vllm-project/vllm
 report:
   output_dir: reports
-  filename: "report-{date}.md"
+  # {window} = UTC 窗口标识（如 20260903T0000Z-20260904T0000Z）：
+  # 同一窗口重跑覆盖同名文件，不同窗口生成新文件
+  filename: "report-{window}.md"
   table_inclusion: breaks_only         # 硬性规则：仅存在 break 的记录进主表
   write_empty_report: true
 store:

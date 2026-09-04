@@ -197,7 +197,13 @@ vllm_ascend_sha=<ascend_sha>
 - vllm-ascend override path: `a -> b -> c`        # 可选
 - Compatibility impact: <一句话影响描述>
 
-## Items for review
+## Items for review                              # review 项与 break 条目同构，可并存
+
+### 1. <priority> <relation>/<contract_kind>
+- vLLM API changed by this PR: `<file>:<Owner.name>`
+- Affected vllm-ascend code: `<file>:<line>`
+- Review reason: <为什么需要人工复核>              # review 条目特有字段
+- Compatibility impact: <一句话影响描述>
 ...
 
 FAILED ... - Failed: this vLLM PR introduces an interface break in vllm-ascend
@@ -238,21 +244,26 @@ class BreakFinding:
 
 ### 5.4 Reporter（报告生成）
 
-- 输出目录：`reports/`，文件名 `report-YYYY-MM-DD.md`（以运行日期命名；同日重跑覆盖写入，历史日志快照保留）；
+- 输出目录：`reports/`（相对路径在加载时锚定到工具目录，与运行 cwd 无关）；
+- **文件名以时间窗命名**：`report-{window}.md`，`{window}` 为 UTC 窗口标识（如 `report-20260903T0000Z-20260904T0000Z.md`）。同一窗口重跑覆盖同名文件（数据补齐后的最新版），不同窗口生成新文件、互不覆盖；
+- 报告标题含时间窗（`# Ascend NPU Test 失败报告 — 2026-09-03T00:00Z ~ 2026-09-04T00:00Z`），正文首节给出双时区窗口详情；
 - 报告结构：
 
 ```markdown
-# Ascend NPU Test 失败报告 — 2026-09-03
+# Ascend NPU Test 失败报告 — 2026-09-03T00:00Z ~ 2026-09-04T00:00Z
+
+查询时间窗：2026-09-03 00:00Z ~ 2026-09-04 00:00Z（UTC） / 2026-09-03 08:00 ~ 2026-09-04 08:00（北京时间，UTC+8）
 
 统计：过去 24h 共发现 N 次 Ascend NPU Test 失败运行，其中 K 次确认存在 break（已收录表格）。
 
 ## Break 汇总表（仅收录确认存在 break 的记录）
 
-| Build | PR | PR 状态 | PR 标题 | Breaks | Priority | vLLM API 变更 | vllm-ascend 受影响代码 | 影响说明 | 日志链接 |
-| ----- | -- | ------- | ------- | ------ | -------- | ------------- | ---------------------- | -------- | -------- |
-| #12345 | [#22331](https://github.com/vllm-project/vllm/pull/22331) | **Merged** | [Bugfix] ... | 2 | P0 | `vllm/xxx.py:Owner.method` | `vllm_ascend/xxx.py:123` | This PR changes the return contract ... | [job](https://buildkite.com/vllm/ci/builds/12345#...) |
+| Build | PR | PR 状态 | PR 标题 | Breaks | Priority | vLLM API 变更 | vllm-ascend 受影响代码 | 影响说明 | Review reason | 日志链接 |
+| ----- | -- | ------- | ------- | ------ | -------- | ------------- | ---------------------- | -------- | ------------- | -------- |
+| #12345 | [#22331](https://github.com/vllm-project/vllm/pull/22331) | **Merged** | [Bugfix] ... | 2 | P0 | `vllm/xxx.py:Owner.method` | `vllm_ascend/xxx.py:123` | This PR changes the return contract ... | The override does not accept the new optional parameter `skip_rows` ... | [job](https://buildkite.com/vllm/ci/builds/12345#...) |
 
 - **收录规则（硬性）**：只有 Analyzer 判定 `Result: BREAKS FOUND` 且成功解析出至少一条 break finding 的记录才进入本表；失败但无 break（`Result: PASS/REVIEW`、分析器错误 `interface analysis failed`、`section_not_found`）一律不进表，仅计入统计与附录。
+- **Review reason 列**：日志 result 段的 `## Items for review` 条目与 break 条目同构、可与 break 并存（实测 BREAKS FOUND 日志也常带 review 项）。解析时按 `##` 父段落拆分为 breaks 与 review items 两类，本列展示该记录 review 条目的 `Review reason:` 内容（去重、超 110 字符截断）；无 review 项时为 `—`。附录 A 同样带此列（REVIEW 记录在此可读）。统计行额外给出"待复核项 N 条"。
 - **PR 状态列**：取 GitHub 查询时刻的实时状态——`Open`（待合入，PR 作者可修）/ `Merged`（已合入 main，break 已进入主干，处置优先级最高）/ `Closed`（已放弃）。PR 状态排序建议：Merged > Open > Closed。
 - 同一 PR 多个失败 build 时合并为一行（Breaks 取条目并集，Build 列列出全部关联 build 号），避免表格被同一 PR 刷屏。
 
@@ -323,7 +334,21 @@ name: ascend-ci-report
 on:
   schedule:
     - cron: "0 1 * * *"      # UTC 01:00 = 北京时间 09:00
-  workflow_dispatch:          # 支持手动触发/补数
+  workflow_dispatch:          # 手动触发/补数入口，支持配置时间窗
+    inputs:
+      date:
+        description: '查询日期（窗口起始日，UTC，YYYY-MM-DD）。留空 = 按增量调度'
+        required: false
+        default: ''
+      backfill_days:
+        description: '回溯天数 N（从现在向前回溯 N 天）。与"查询日期"二选一'
+        required: false
+        default: ''
+      refetch:
+        description: '忽略已处理记录，重新拉取日志并覆盖分析'
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: write
 defaults:
@@ -344,7 +369,18 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install .
-      - run: ascend-ci-report run
+      - name: Run report
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.date }}" ]; then
+            ARGS="$ARGS --date ${{ inputs.date }}"
+          elif [ -n "${{ inputs.backfill_days }}" ]; then
+            ARGS="$ARGS --backfill ${{ inputs.backfill_days }}"
+          fi
+          if [ "${{ inputs.refetch }}" = "true" ]; then
+            ARGS="$ARGS --refetch"
+          fi
+          ascend-ci-report run $ARGS
       - uses: actions/upload-artifact@v4
         if: always()
         with:

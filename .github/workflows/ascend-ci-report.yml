@@ -5,7 +5,21 @@ name: ascend-ci-report
 on:
   schedule:
     - cron: "0 1 * * *"      # UTC 01:00 = 北京时间 09:00
-  workflow_dispatch:          # 手动触发/补数入口
+  workflow_dispatch:          # 手动触发/补数入口，支持配置时间窗
+    inputs:
+      date:
+        description: '查询日期（窗口起始日，UTC，YYYY-MM-DD）。留空 = 按增量调度'
+        required: false
+        default: ''
+      backfill_days:
+        description: '回溯天数 N（从现在向前回溯 N 天）。与"查询日期"二选一'
+        required: false
+        default: ''
+      refetch:
+        description: '忽略已处理记录，重新拉取日志并覆盖分析'
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: write
 defaults:
@@ -24,7 +38,18 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install .
-      - run: ascend-ci-report run
+      - name: Run report
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.date }}" ]; then
+            ARGS="$ARGS --date ${{ inputs.date }}"
+          elif [ -n "${{ inputs.backfill_days }}" ]; then
+            ARGS="$ARGS --backfill ${{ inputs.backfill_days }}"
+          fi
+          if [ "${{ inputs.refetch }}" = "true" ]; then
+            ARGS="$ARGS --refetch"
+          fi
+          ascend-ci-report run $ARGS
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -46,6 +46,7 @@ class AnalysisConfig(BaseModel):
         "affected_code": r"^\s*- Affected vllm-ascend code: `(?P<value>.+)`\s*$",
         "impact": r"^\s*- Compatibility impact: (?P<value>.+)$",
         "override_path": r"^\s*- vllm-ascend override path: `(?P<value>.+)`\s*$",
+        "review_reason": r"^\s*- Review reason: (?P<value>.+)$",
     })
     pytest_fail_patterns: dict[str, str] = Field(default_factory=lambda: {
         "real_break": "this vLLM PR introduces an interface break in vllm-ascend",
@@ -63,7 +64,8 @@ class GithubConfig(BaseModel):
 
 class ReportConfig(BaseModel):
     output_dir: str = "reports"
-    filename: str = "report-{date}.md"
+    # {window} = UTC window identity, e.g. 20260903T0000Z-20260904T0000Z
+    filename: str = "report-{window}.md"
     table_inclusion: str = "breaks_only"
     write_empty_report: bool = True
 
@@ -94,4 +96,12 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         p = Path(path)
         if p.exists():
             data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    return AppConfig(**data)
+    cfg = AppConfig(**data)
+    # Anchor relative output paths to the tool directory so results land in
+    # tools/ascend-npu-report/ regardless of the process working directory.
+    tool_root = Path(__file__).resolve().parent.parent
+    if not Path(cfg.report.output_dir).is_absolute():
+        cfg.report.output_dir = str(tool_root / cfg.report.output_dir)
+    if not Path(cfg.store.dir).is_absolute():
+        cfg.store.dir = str(tool_root / cfg.store.dir)
+    return cfg
