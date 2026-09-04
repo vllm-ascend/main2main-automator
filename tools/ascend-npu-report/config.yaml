@@ -1,0 +1,42 @@
+dashboard:
+  base_url: https://ci.vllm.ai         # 无需鉴权
+  runs_endpoint: /api/jobs/runs
+  pipeline: CI                          # dashboard 侧的 pipeline 名称（非 Buildkite slug）
+  branch: main
+buildkite:
+  api_token_env: BUILDKITE_API_TOKEN   # 仅用于拉日志 + 交叉校验，read_builds scope
+  org: vllm
+  pipeline_slug: ci
+  branch: main
+  cross_check: true                    # 是否做 Buildkite 侧扫描校验
+  cross_check_states: [failed, failing]
+job:
+  name: "Ascend NPU Test"              # Dashboard jobName 参数（精确匹配）
+  step_key: ascend-npu-test            # Buildkite 侧交叉校验时的匹配键
+  failure_states: [failed, soft_failed, timed_out, broken, failing]
+analysis:
+  section_start_pattern: '^\+\+\+ vLLM PR compatibility (?P<section>inputs|timings|result for vllm-ascend)\s*$'
+  result_line_pattern: '^\*\*Result: (?P<result>BREAKS FOUND|REVIEW|PASS)\*\*\s*$'
+  finding_header_pattern: '^### (?P<index>\d+)\. (?P<priority>\S+) (?P<relation>[^/\s]+)\s*/\s*(?P<contract>\S+)\s*$'
+  field_patterns:
+    vllm_api: '^\s*- vLLM API changed by this PR: `(?P<value>.+)`\s*$'
+    affected_code: '^\s*- Affected vllm-ascend code: `(?P<value>.+)`\s*$'
+    impact: '^\s*- Compatibility impact: (?P<value>.+)$'
+    override_path: '^\s*- vllm-ascend override path: `(?P<value>.+)`\s*$'
+  pytest_fail_patterns:
+    real_break: 'this vLLM PR introduces an interface break in vllm-ascend'
+    analyzer_error: 'interface analysis failed with exit code'
+  break_patterns: ['\bbreak\w*\b']       # 仅作兜底
+  context_lines: 2
+github:
+  token_env: GITHUB_PR_TOKEN           # Actions 内置 token 自动注入；本地用个人 PAT
+  repo: vllm-project/vllm
+report:
+  output_dir: reports
+  filename: "report-{date}.md"
+  table_inclusion: breaks_only         # 硬性规则：仅存在 break 的记录进主表
+  write_empty_report: true
+store:
+  dir: store
+schedule:
+  lookback_default_hours: 24

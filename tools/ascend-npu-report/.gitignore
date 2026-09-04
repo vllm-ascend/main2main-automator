@@ -1,0 +1,13 @@
+# 运行产物不入库
+store/
+logs/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/

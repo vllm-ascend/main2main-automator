@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ascend-ci-report"
+version = "0.1.0"
+description = "Daily Ascend NPU Test CI failure monitor with vllm-ascend interface break reporting"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+ascend-ci-report = "ascend_report.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ascend_report*"]
