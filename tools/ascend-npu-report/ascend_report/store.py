@@ -133,3 +133,15 @@ class Store:
         path = log_dir / f"{build_number or 'unknown'}_{job_id}.log"
         path.write_text(content, encoding="utf-8")
         return path
+
+    def load_log_snapshot(self, run_date: str, build_number: int | None,
+                          job_id: str) -> str | None:
+        """Cached log text by the same key save_log_snapshot wrote; None if absent."""
+        path = (self.root / "logs" / run_date
+                / f"{build_number or 'unknown'}_{job_id}.log")
+        if not path.exists():
+            return None
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return None

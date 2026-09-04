@@ -20,7 +20,7 @@ from .buildkite import BuildkiteClient, BuildkiteError
 from .config import AppConfig, load_config
 from .dashboard import DashboardClient, DashboardError, DashboardRun
 from .github import GithubClient, GithubRateLimitError, PRInfo
-from .reporter import ReportRecord, render_report
+from .reporter import ReportRecord, render_report, window_slug
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -193,11 +193,29 @@ def _run(cfg: AppConfig, store: Store, window_start: datetime,
     gh = GithubClient(cfg.github)
     http = httpx.Client(timeout=60.0)
 
-    # resolve PRs first so that pass-2 dedup can compare across commits
+    # resolve PRs first so that pass-2 dedup can compare across commits.
+    # Already-processed jobs are NOT dropped: the report is rewritten every
+    # run, so their cached log snapshots are re-analyzed to keep prior
+    # findings in it (re-analysis is local-only, no extra API calls).
+    snapshot_key = window_start.date().isoformat()
     pending: list[tuple[DashboardRun, PRInfo | None]] = []
     for run in jobs:
         if store.is_processed(run.job_id) and not args.refetch:
-            log.info("skip processed job %s (build %s)", run.job_id, run.build_number)
+            text = store.load_log_snapshot(snapshot_key, run.build_number,
+                                           run.job_id)
+            if text is None:
+                log.info("skip processed job %s (build %s; no cached snapshot)",
+                         run.job_id, run.build_number)
+                continue
+            pr = None
+            if run.commit_sha:
+                cached = store.get_cached_pr(run.commit_sha)
+                if cached:
+                    pr = PRInfo(number=cached["number"], title=cached["title"],
+                                status=cached["status"],
+                                html_url=cached["html_url"],
+                                author=cached["author"], resolved_by="cache")
+            pending.append((run, pr))
             continue
         pending.append((run, _resolve_pr(gh, bk, run, store)))
 
@@ -218,7 +236,7 @@ def _run(cfg: AppConfig, store: Store, window_start: datetime,
             try:
                 log_text = bk.get_job_log(run.build_number, run.job_id)
                 analysis = analyze_log(log_text, cfg.analysis)
-                store.save_log_snapshot(date.today().isoformat(),
+                store.save_log_snapshot(snapshot_key,
                                         run.build_number, run.job_id, log_text)
                 if analysis.included_in_table:
                     findings_total += len(analysis.findings)
@@ -232,10 +250,14 @@ def _run(cfg: AppConfig, store: Store, window_start: datetime,
             web_url=run.web_url, pr=pr, analysis=analysis, source=index_source))
 
     report_date = date.today().isoformat()
-    report = render_report(report_date, records, raw_failed=total)
+    report = render_report(report_date, records, raw_failed=total,
+                           window=(window_start, window_end))
     out_dir = Path(cfg.report.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / cfg.report.filename.format(date=report_date)
+    # Window-keyed filename: same window overwrites, new window is a new file.
+    window_key = window_slug(window_start, window_end)
+    out_path = out_dir / cfg.report.filename.format(date=report_date,
+                                                    window=window_key)
     if records or cfg.report.write_empty_report:
         out_path.write_text(report, encoding="utf-8")
         log.info("report written: %s", out_path)

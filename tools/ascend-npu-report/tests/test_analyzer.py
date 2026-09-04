@@ -7,7 +7,8 @@ def test_breaks_found_parsed_and_included(breaks_log):
     r = analyze_log(breaks_log, cfg)
     assert r.section_found
     assert r.result == "BREAKS FOUND"
-    assert len(r.findings) == 2
+    assert len(r.findings) == 2          # breaks section only
+    assert len(r.review_findings) == 1   # review section split out
     assert r.included_in_table
     f1 = r.findings[0]
     assert f1.index == 1
@@ -18,6 +19,13 @@ def test_breaks_found_parsed_and_included(breaks_log):
     assert f1.affected_code == "vllm_ascend/worker/worker_v1.py:123"
     assert f1.override_path.startswith("vllm_ascend/worker")
     assert "break" in f1.impact
+    assert f1.review_reason is None      # break entries carry no review reason
+    rv = r.review_findings[0]
+    assert rv.priority == "P2"
+    assert rv.relation == "override"
+    assert rv.contract_kind == "call_arguments"
+    assert rv.review_reason.startswith("This PR adds another contract difference")
+    assert rv.affected_code == "vllm_ascend/_310p/kv_block_zeroer.py:32"
     assert r.pytest_real_break is False  # no pytest fail line in fixture
 
 

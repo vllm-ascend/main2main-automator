@@ -35,7 +35,12 @@ vllm_ascend_sha=ccc333
 - Compatibility impact: A new required parameter was added; positional call breaks.
 
 ## Items for review
-(none)
+
+### 1. P2 override/call_arguments
+- vLLM API changed by this PR: `vllm/v1/worker/utils.py:KVBlockZeroer.__init__`
+- Affected vllm-ascend code: `vllm_ascend/_310p/kv_block_zeroer.py:32`
+- Review reason: This PR adds another contract difference, but the affected vllm-ascend code was already incompatible with the base.
+- Compatibility impact: This PR changes the contract of a vLLM API overridden by vllm-ascend.
 """
 
 REVIEW_LOG = BREAKS_LOG.replace("**Result: BREAKS FOUND**", "**Result: REVIEW**")
