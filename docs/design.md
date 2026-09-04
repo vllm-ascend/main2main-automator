@@ -315,7 +315,7 @@ class BreakFinding:
 
 | 方案 | 存储位置 | 可浏览性 | 保留期 | 结论 |
 | --- | --- | --- | --- | --- |
-| **commit 回仓库**（`reports/report-YYYY-MM-DD.md`） | 仓库工作树，随 git 版本化 | 直接在 GitHub 网页浏览/搜索/对比 diff | 永久 | **采用（主方案）** |
+| **commit 回仓库**（`reports/report-{window}.md`，窗口键控命名） | 仓库工作树，随 git 版本化 | 直接在 GitHub 网页浏览/搜索/对比 diff | 永久 | **采用（主方案）** |
 | Workflow artifact | Actions 运行页面附件 | 需进 run 页面下载 zip | 默认 90 天（最长 90） | 辅助备份，`if: always()` 上传含原始日志快照 |
 | GitHub Pages | 独立静态站点 | 浏览器直达 | 随 Pages | 可选增强（报告目录够用，v1 不做） |
 
@@ -323,7 +323,7 @@ commit 回仓库要点：
 
 1. **权限**：workflow 设 `permissions: contents: write`，用内置 `GITHUB_TOKEN` 即可 push 回本仓（无需 PAT）；内置 token 的 push **不会触发其它 workflow**，天然避免循环触发；
 2. **空提交抑制**：`git diff --cached --quiet || git commit ...`，无 break 时不产生空提交；
-3. **同日重跑**：直接覆盖 `report-YYYY-MM-DD.md` 后新提交（文档中该文件的 git diff 即"当日变化"），不做 amend；
+3. **同窗口重跑**：直接覆盖同名 `report-{window}.md` 后新提交（该文件的 git diff 即"窗口内数据补齐后的变化"），不做 amend；不同窗口各为新文件互不覆盖；
 4. **报告索引**：可选维护 `reports/README.md` 索引表（日期 × break 数 × 链接），每次运行追加更新，方便从仓库首页点进最新报告；
 5. **历史追溯**：`reports/` 目录天然构成时间线，`git log reports/` 或 Blame 即可回看任何一天的失败情况——这是选 commit 方案而非 artifact 的核心理由。
 
@@ -400,6 +400,31 @@ jobs:
 
 注意：Actions 的 `schedule` 是尽力而为（高峰期可能延迟十几分钟到更久），对本任务（日粒度）无影响；私有仓每月有免费 runner 分钟额度，日跑一次（分钟级任务）远在额度内。
 
+### 6.2 手动触发与时间窗配置（workflow_dispatch）
+
+Actions 页面 → ascend-ci-report → Run workflow，三个输入（均留空 = 正常每日增量，与定时任务行为一致）：
+
+| 输入 | CLI 映射 | 语义 |
+| --- | --- | --- |
+| `date` | `--date` | 查询窗口起始日（**UTC**，`YYYY-MM-DD`），窗口 = 该日 00:00Z 起 24h。想看北京时间 D 日全天应填 D-1 日（北京 08:00 = UTC 前日 24:00） |
+| `backfill_days` | `--backfill` | 从现在向前回溯 N 天（与 date 二选一，**date 优先**） |
+| `refetch` | `--refetch` | 勾选后忽略已处理记录，重新拉取窗口内日志并覆盖分析 |
+
+典型场景：
+
+| 场景 | date | backfill_days | refetch | 说明 |
+| --- | --- | --- | --- | --- |
+| 日常手动跑（补昨天） | 留空 | 留空 | ☐ | 等价定时增量 |
+| 补特定日期 | `2026-09-01` | 留空 | ☐ | 查 09-01T00:00Z ~ 09-02T00:00Z 窗口 |
+| 补最近 3 天 | 留空 | `3` | ☑ | 生成 3 个窗口文件；已处理 job 需 refetch 才会重算 |
+| 只刷新分析（解析逻辑变更后重出报告） | `2026-09-03` | 留空 | ☑ | 已有快照日志重分析，不重拉 |
+
+填写规则与代价：
+
+1. **幂等**：同窗口重跑只覆盖同名报告文件，不产生重复记录；无变化时空提交抑制跳过 commit；
+2. **refetch 的代价**：重拉窗口内全部失败 job 日志（约 1~2 分钟/天 + Buildkite API 消耗），且这些 job 重算后仍标记为已处理——常规增量不会重复碰它们，因此 refetch 是"重算"而非"额外处理"；
+3. **水位安全**：手动补历史日期不影响增量水位（水位取运行完成时刻，见 5.1）；
+4. **格式校验**：date 必须严格 `YYYY-MM-DD`，否则参数校验失败、run 直接报错退出（不会静默跑错窗口）。
 ## 7. 配置设计
 
 `config.yaml`（支持环境变量覆盖敏感项）：
