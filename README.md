@@ -26,4 +26,4 @@ vllm/vllm-ascend main2main automator
   python -m ascend_report.cli run --backfill 7 --merge
   ```
 
-- 详细设计：[docs/design.md](docs/design.md)
+- 详细设计：[docs/ascend-ci-report-design.md](docs/ascend-ci-report-design.md)

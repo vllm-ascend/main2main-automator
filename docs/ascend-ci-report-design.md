@@ -325,6 +325,7 @@ commit 回仓库要点：
 3. **同窗口重跑**：直接覆盖同名 `report-{window}.md` 后新提交（该文件的 git diff 即"窗口内数据补齐后的变化"），不做 amend；不同窗口各为新文件互不覆盖；
 4. **报告索引**：可选维护 `reports/README.md` 索引表（日期 × break 数 × 链接），每次运行追加更新，方便从仓库首页点进最新报告；
 5. **历史追溯**：`reports/` 目录天然构成时间线，`git log reports/` 或 Blame 即可回看任何一天的失败情况。
+6. **自动清理**：每次 workflow run 结束时清理窗口起始日期超过 90 天的报告文件（硬编码 `_REPORT_RETENTION_DAYS = 90`），`merged-report-*` 和 `report-*` 前缀均适用。
 
 workflow 参考实现：
 
@@ -554,7 +555,7 @@ GitHub Actions 侧：
 ```
 main2main-automator/
 ├── docs/                          # 仓库级文档
-│   └── design.md                  # 本设计文档
+│   └── ascend-ci-report-design.md  # 本设计文档
 └── tools/
     └── ascend-npu-report/         # 本工具的独立根目录
         ├── ascend_report/         # Python 包

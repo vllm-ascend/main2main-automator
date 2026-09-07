@@ -33,6 +33,7 @@ from .store import Store
 log = logging.getLogger(__name__)
 
 _INTERFACE_CUTOFF = date(2026, 9, 3)  # CI 未上线 vllm-interface 的截止日期
+_REPORT_RETENTION_DAYS = 90  # 保留最近 3 个月的报告
 
 PR_NUM_RE = re.compile(r"\(#(\d+)\)\s*$")
 BRANCH_PR_RE = re.compile(r"(?:pull-request|^pr)[/-](\d+)")
@@ -134,13 +135,42 @@ def cmd_run(args) -> int:
     store = Store(Path(cfg.store.dir))
     try:
         if getattr(args, "merge", False):
-            return _cmd_merge(cfg, store, args)
-        window_start, window_end = _compute_window(cfg, args)
-        args.window_start = store.last_successful_run_end_parsed() or window_start
-        window_start, window_end = _compute_window(cfg, args)
-        return _run(cfg, store, window_start, window_end, args)
+            rc = _cmd_merge(cfg, store, args)
+        else:
+            window_start, window_end = _compute_window(cfg, args)
+            args.window_start = store.last_successful_run_end_parsed() or window_start
+            window_start, window_end = _compute_window(cfg, args)
+            rc = _run(cfg, store, window_start, window_end, args)
+        _cleanup_old_reports(Path(cfg.report.output_dir))
+        return rc
     finally:
         store.close()
+
+
+
+def _cleanup_old_reports(out_dir: Path) -> None:
+    """Delete report files whose window start date is older than the retention period."""
+    if not out_dir.exists():
+        return
+    cutoff = date.today() - timedelta(days=_REPORT_RETENTION_DAYS)
+    for p in sorted(out_dir.glob("*.md")):
+        # Strip known prefixes to get the window slug
+        name = p.name
+        for prefix in ("merged-report-", "report-"):
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+                break
+        # name should now be YYYYMMDDTHHMMZ-YYYYMMDDTHHMMZ
+        parts = name.split("Z-")
+        if len(parts) != 2:
+            continue
+        try:
+            window_start = datetime.strptime(parts[0], "%Y%m%dT%H%M").date()
+        except ValueError:
+            continue
+        if window_start < cutoff:
+            p.unlink()
+            log.info("cleaned up old report: %s", p.name)
 
 
 def _find_report_for_date(out_dir: Path, d: date) -> Path | None:
