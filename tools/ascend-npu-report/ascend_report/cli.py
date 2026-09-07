@@ -199,7 +199,7 @@ def _find_report_for_date(out_dir: Path, d: date) -> Path | None:
                 continue
             ws = datetime.strptime(parts[0], "%Y%m%dT%H%M").replace(
                 tzinfo=timezone.utc)
-            we = datetime.strptime(parts[1], "%Y%m%dT%H%M").replace(
+            we = datetime.strptime(parts[1].rstrip("Z"), "%Y%m%dT%H%M").replace(
                 tzinfo=timezone.utc)
             if ws <= day_start and day_end <= we:
                 return p
