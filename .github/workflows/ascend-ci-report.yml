@@ -32,7 +32,8 @@ defaults:
     working-directory: tools/ascend-npu-report   # 工具自包含目录（ascend-ci-report-design.md 第 10 节）
 jobs:
   report:
-    runs-on: ubuntu-latest
+    # runs-on: ubuntu-latest
+    runs-on: linux-aarch64-a2b3-8
     timeout-minutes: 15
     env:                                        # job 级：run 步骤的进程可读
       BUILDKITE_API_TOKEN: ${{ secrets.BUILDKITE_API_TOKEN }}
