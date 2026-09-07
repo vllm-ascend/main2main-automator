@@ -20,6 +20,11 @@ on:
         type: boolean
         required: false
         default: false
+      merge:
+        description: '汇总已有日报（搭配 backfill_days 使用，缺失天自动补充）'
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: write
 defaults:
@@ -49,14 +54,10 @@ jobs:
           if [ "${{ inputs.refetch }}" = "true" ]; then
             ARGS="$ARGS --refetch"
           fi
+          if [ "${{ inputs.merge }}" = "true" ]; then
+            ARGS="$ARGS --merge"
+          fi
           ascend-ci-report run $ARGS
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: report-${{ github.run_id }}
-          path: |                              # artifact 路径相对仓库根
-            tools/ascend-npu-report/reports/
-            tools/ascend-npu-report/store/logs/
       - name: Commit reports
         working-directory: ${{ github.workspace }}   # git 操作回仓库根
         run: |

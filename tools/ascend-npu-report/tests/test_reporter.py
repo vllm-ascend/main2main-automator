@@ -153,3 +153,172 @@ def test_window_slug_identity():
     assert window_slug(*w) == window_slug(w[0], w[1])
     assert window_slug(*w) != window_slug(
         w[0], w[1].replace(hour=12))
+
+
+# ---------------------------------------------------------------------------
+# Merge mode tests
+# ---------------------------------------------------------------------------
+
+_SAMPLE_REPORT = """\
+# Ascend NPU Test 失败报告 — 2026-09-05T00:00Z ~ 2026-09-06T00:00Z
+
+查询时间窗：2026-09-05 00:00Z ~ 2026-09-06 00:00Z（UTC）
+统计：本时间窗内共发现 10 次 Ascend NPU Test 失败运行，其中 2 次确认存在 break。
+
+## Break 汇总表（仅收录确认存在 break 的记录）
+
+| Build | PR | PR 状态 | PR 标题 | Breaks | Priority | vLLM API 变更 | vllm-ascend 受影响代码 | 影响说明 | Review reason | 日志链接 |
+| ----- | -- | ------- | ------- | ------ | -------- | ------------- | ---------------------- | -------- | ------------- | -------- |
+| #87016 | — | — | — | 1 | P1 | vllm/v1/worker/gpu.py:method | vllm_ascend/worker/v2/spec.py:311 | Impact A | — | [build#87016](https://buildkite.com/vllm/ci/builds/87016) |
+| #86999 | [#55356](https://github.com/vllm-project/vllm/pull/55356) | **Open** | Fix something | 3 | P1 | vllm/v1/outputs.py:RoutedExpertsLists | vllm_ascend/worker/model_runner.py:86 | Impact B | Review reason here | [build#86999](https://buildkite.com/vllm/ci/builds/86999) |
+
+## 附录 A：失败但无 break 的记录
+
+| Build | PR | PR 状态 | Job 状态 | 原因 | Review reason | 链接 |
+| ----- | -- | ------- | -------- | ---- | ------------- | ---- |
+| #87000 | — | — | failed | Result: PASS（无 break） | — | [job](https://buildkite.com/vllm/ci/builds/87000) |
+"""
+
+_SAMPLE_REPORT_2 = """\
+# Ascend NPU Test 失败报告 — 2026-09-06T00:00Z ~ 2026-09-07T00:00Z
+
+查询时间窗：2026-09-06 00:00Z ~ 2026-09-07 00:00Z（UTC）
+统计：本时间窗内共发现 5 次 Ascend NPU Test 失败运行，其中 1 次确认存在 break。
+
+## Break 汇总表（仅收录确认存在 break 的记录）
+
+| Build | PR | PR 状态 | PR 标题 | Breaks | Priority | vLLM API 变更 | vllm-ascend 受影响代码 | 影响说明 | Review reason | 日志链接 |
+| ----- | -- | ------- | ------- | ------ | -------- | ------------- | ---------------------- | -------- | ------------- | -------- |
+| #87100 | [#55356](https://github.com/vllm-project/vllm/pull/55356) | **Open** | Fix something | 2 | P0 | vllm/v1/outputs.py:RoutedExpertsLists | vllm_ascend/worker/model_runner.py:86 | Impact C | — | [build#87100](https://buildkite.com/vllm/ci/builds/87100) |
+"""
+
+_SAMPLE_REPORT_NO_BREAKS = """\
+# Ascend NPU Test 失败报告 — 2026-09-07T00:00Z ~ 2026-09-08T00:00Z
+
+统计：本时间窗内共发现 3 次 Ascend NPU Test 失败运行，其中 0 次确认存在 break。
+"""
+
+
+def test_parse_break_table(tmp_path):
+    from pathlib import Path
+    from ascend_report.reporter import parse_break_table
+    p = tmp_path / "report.md"
+    p.write_text(_SAMPLE_REPORT, encoding="utf-8")
+    rows = parse_break_table(p)
+    assert len(rows) == 2
+    assert rows[0]["build"] == "#87016"
+    assert rows[0]["pr"] == "—"
+    assert rows[0]["breaks_count"] == "1"
+    assert rows[1]["build"] == "#86999"
+    assert "#55356" in rows[1]["pr"]
+    assert rows[1]["pr_status"] == "**Open**"
+
+
+def test_parse_break_table_no_breaks(tmp_path):
+    from pathlib import Path
+    from ascend_report.reporter import parse_break_table
+    p = tmp_path / "report.md"
+    p.write_text(_SAMPLE_REPORT_NO_BREAKS, encoding="utf-8")
+    rows = parse_break_table(p)
+    assert rows == []
+
+
+def test_parse_break_table_with_appendix(tmp_path):
+    """Appendix A tables must NOT be parsed as break rows."""
+    from pathlib import Path
+    from ascend_report.reporter import parse_break_table
+    p = tmp_path / "report.md"
+    p.write_text(_SAMPLE_REPORT, encoding="utf-8")
+    rows = parse_break_table(p)
+    builds = [r["build"] for r in rows]
+    assert "#87000" not in builds  # appendix row excluded
+
+
+def test_dedup_merged_rows_build_dedup():
+    from ascend_report.reporter import dedup_merged_rows
+    rows = [
+        {"build": "#100", "pr": "—", "breaks_count": "1",
+         "pr_status": "—", "pr_title": "—", "priority": "P1",
+         "vllm_api": "a", "affected_code": "b", "impact": "c",
+         "review_reason": "—", "log_url": "—"},
+        {"build": "#100", "pr": "—", "breaks_count": "2",
+         "pr_status": "—", "pr_title": "—", "priority": "P0",
+         "vllm_api": "x", "affected_code": "y", "impact": "z",
+         "review_reason": "—", "log_url": "—"},
+    ]
+    result = dedup_merged_rows(rows)
+    assert len(result) == 1
+    assert result[0]["build"] == "#100"
+
+
+def test_dedup_merged_rows_pr_dedup_keeps_newest():
+    from ascend_report.reporter import dedup_merged_rows
+    rows = [
+        {"build": "#200", "pr": "[#500](url)", "breaks_count": "1",
+         "pr_status": "**Open**", "pr_title": "t", "priority": "P1",
+         "vllm_api": "a", "affected_code": "b", "impact": "c",
+         "review_reason": "—", "log_url": "—"},
+        {"build": "#100", "pr": "[#500](url)", "breaks_count": "2",
+         "pr_status": "**Merged**", "pr_title": "t", "priority": "P0",
+         "vllm_api": "x", "affected_code": "y", "impact": "z",
+         "review_reason": "—", "log_url": "—"},
+    ]
+    result = dedup_merged_rows(rows)
+    assert len(result) == 1
+    assert result[0]["build"] == "#200"  # newer build kept
+
+
+def test_dedup_merged_rows_no_pr_always_kept():
+    from ascend_report.reporter import dedup_merged_rows
+    rows = [
+        {"build": "#300", "pr": "—", "breaks_count": "1",
+         "pr_status": "—", "pr_title": "—", "priority": "P1",
+         "vllm_api": "a", "affected_code": "b", "impact": "c",
+         "review_reason": "—", "log_url": "—"},
+        {"build": "#200", "pr": "—", "breaks_count": "1",
+         "pr_status": "—", "pr_title": "—", "priority": "P1",
+         "vllm_api": "a", "affected_code": "b", "impact": "c",
+         "review_reason": "—", "log_url": "—"},
+    ]
+    result = dedup_merged_rows(rows)
+    assert len(result) == 2  # both kept (no PR to dedup on)
+
+
+def test_render_merged_report(tmp_path):
+    from pathlib import Path
+    from datetime import datetime, timezone
+    from ascend_report.reporter import parse_break_table, render_merged_report
+    p = tmp_path / "report.md"
+    p.write_text(_SAMPLE_REPORT, encoding="utf-8")
+    rows = parse_break_table(p)
+    window = (datetime(2026, 9, 5, tzinfo=timezone.utc),
+              datetime(2026, 9, 7, tzinfo=timezone.utc))
+    out = render_merged_report("2026-09-07", rows,
+                               raw_failed=5, window=window)
+    assert "失败汇总报告" in out
+    assert "汇总期间共 5 条 break 记录" in out
+    assert "## Break 汇总表" in out
+    assert "附录" not in out
+    assert "#87016" in out
+    assert "#86999" in out
+
+
+def test_render_merged_report_dedup_across_days(tmp_path):
+    from pathlib import Path
+    from datetime import datetime, timezone
+    from ascend_report.reporter import (parse_break_table, dedup_merged_rows,
+                                        render_merged_report)
+    p1 = tmp_path / "r1.md"
+    p1.write_text(_SAMPLE_REPORT, encoding="utf-8")
+    p2 = tmp_path / "r2.md"
+    p2.write_text(_SAMPLE_REPORT_2, encoding="utf-8")
+
+    all_rows = parse_break_table(p1) + parse_break_table(p2)
+    deduped = dedup_merged_rows(all_rows)
+    # PR #55356 appears in both reports; only newest build (#87100) kept
+    # Build #87016 (no PR) always kept
+    assert len(deduped) == 2
+    builds = [r["build"] for r in deduped]
+    assert "#87100" in builds
+    assert "#87016" in builds
+    assert "#86999" not in builds  # superseded by #87100 for same PR

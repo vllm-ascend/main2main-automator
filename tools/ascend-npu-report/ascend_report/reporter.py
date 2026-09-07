@@ -227,3 +227,136 @@ def render_report(report_date: str, records: list[ReportRecord],
         out.append("")
 
     return "\n".join(out).rstrip("\n") + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Merge mode: parse existing report markdown tables and render merged report
+# ---------------------------------------------------------------------------
+
+def parse_break_table(path: Path) -> list[dict]:
+    """Parse the Break summary table from an existing report markdown file.
+
+    Returns a list of dicts, each containing the 11 columns of the break
+    table.  Returns an empty list when the report has no break section.
+    """
+    from pathlib import Path as _P
+    text = _P(path).read_text(encoding="utf-8")
+    lines = text.split("\n")
+
+    # Locate the "## Break 汇总表" heading
+    table_start: int | None = None
+    for i, line in enumerate(lines):
+        if line.startswith("## Break 汇总表"):
+            table_start = i
+            break
+    if table_start is None:
+        return []
+
+    # Walk past header + separator, collect data rows
+    rows: list[dict] = []
+    in_table = False
+    for line in lines[table_start + 1:]:
+        if line.startswith("| Build"):
+            in_table = True
+            continue
+        if in_table and line.startswith("| ---"):
+            continue
+        if in_table and line.startswith("| "):
+            cells = [c.strip() for c in line.split("|")[1:-1]]
+            if len(cells) >= 11:
+                rows.append({
+                    "build": cells[0],
+                    "pr": cells[1],
+                    "pr_status": cells[2],
+                    "pr_title": cells[3],
+                    "breaks_count": cells[4],
+                    "priority": cells[5],
+                    "vllm_api": cells[6],
+                    "affected_code": cells[7],
+                    "impact": cells[8],
+                    "review_reason": cells[9],
+                    "log_url": cells[10],
+                })
+        elif in_table and not line.startswith("| "):
+            break  # left the table
+    return rows
+
+
+def dedup_merged_rows(rows: list[dict]) -> list[dict]:
+    """Deduplicate merged break rows: by build number, then by PR (keep newest).
+
+    Sorts by build number descending so that the newest build per PR is kept.
+    Records without a PR are always kept.
+    """
+    # Pass 1: build number dedup
+    seen_builds: set[str] = set()
+    unique: list[dict] = []
+    for r in rows:
+        build = r["build"]
+        if build in seen_builds:
+            continue
+        seen_builds.add(build)
+        unique.append(r)
+
+    # Pass 2: PR dedup — keep newest build per PR
+    unique.sort(
+        key=lambda r: int(r["build"].lstrip("#")) if r["build"] != "—" else 0,
+        reverse=True,
+    )
+    seen_pr: set[str] = set()
+    result: list[dict] = []
+    for r in unique:
+        pr = r["pr"]
+        if pr == "—":
+            result.append(r)
+            continue
+        if pr in seen_pr:
+            continue
+        seen_pr.add(pr)
+        result.append(r)
+    return result
+
+
+def _merged_main_table(rows: list[dict]) -> str:
+    """Render the break table from parsed dict rows (merge mode)."""
+    header = ("| Build | PR | PR 状态 | PR 标题 | Breaks | Priority "
+              "| vLLM API 变更 | vllm-ascend 受影响代码 | 影响说明 "
+              "| Review reason | 日志链接 |\n"
+              "| ----- | -- | ------- | ------- | ------ | -------- "
+              "| ------------- | ---------------------- | -------- "
+              "| ------------- | -------- |")
+    lines = [header]
+    for r in rows:
+        lines.append(
+            f"| {r['build']} | {r['pr']} | {r['pr_status']} "
+            f"| {r['pr_title']} | {r['breaks_count']} "
+            f"| {r['priority']} | {r['vllm_api']} | {r['affected_code']} "
+            f"| {r['impact']} | {r['review_reason']} "
+            f"| {r['log_url']} |")
+    return "\n".join(lines)
+
+
+def render_merged_report(report_date: str, rows: list[dict],
+                         raw_failed: int | None = None,
+                         window: tuple[datetime, datetime] | None = None) -> str:
+    """Render a merged report with only the break table, no appendices."""
+    if window:
+        w0 = window[0].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+        w1 = window[1].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+        title = f"# Ascend NPU Test 失败汇总报告 — {w0} ~ {w1}"
+    else:
+        title = f"# Ascend NPU Test 失败汇总报告 — {report_date}"
+    out = [title, ""]
+    if window:
+        out.append(_fmt_window(window[0], window[1]))
+    raw = raw_failed if raw_failed is not None else len(rows)
+    stats = (f"统计：汇总期间共 {raw} 条 break 记录"
+             + (f"（去重后 {len(rows)} 条）" if raw != len(rows) else "") + "。")
+    out.append(stats)
+    out.append("")
+    if rows:
+        out.append("## Break 汇总表（仅收录确认存在 break 的记录）")
+        out.append("")
+        out.append(_merged_main_table(rows))
+        out.append("")
+    return "\n".join(out).rstrip("\n") + "\n"

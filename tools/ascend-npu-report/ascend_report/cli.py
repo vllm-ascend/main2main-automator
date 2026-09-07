@@ -20,10 +20,19 @@ from .buildkite import BuildkiteClient, BuildkiteError
 from .config import AppConfig, load_config
 from .dashboard import DashboardClient, DashboardError, DashboardRun
 from .github import GithubClient, GithubRateLimitError, PRInfo
-from .reporter import ReportRecord, render_report, window_slug
+from .reporter import (
+    ReportRecord,
+    dedup_merged_rows,
+    parse_break_table,
+    render_merged_report,
+    render_report,
+    window_slug,
+)
 from .store import Store
 
 log = logging.getLogger(__name__)
+
+_INTERFACE_CUTOFF = date(2026, 9, 3)  # CI 未上线 vllm-interface 的截止日期
 
 PR_NUM_RE = re.compile(r"\(#(\d+)\)\s*$")
 BRANCH_PR_RE = re.compile(r"(?:pull-request|^pr)[/-](\d+)")
@@ -124,12 +133,129 @@ def cmd_run(args) -> int:
     cfg = load_config(args.config or _default_config_path())
     store = Store(Path(cfg.store.dir))
     try:
+        if getattr(args, "merge", False):
+            return _cmd_merge(cfg, store, args)
         window_start, window_end = _compute_window(cfg, args)
         args.window_start = store.last_successful_run_end_parsed() or window_start
         window_start, window_end = _compute_window(cfg, args)
         return _run(cfg, store, window_start, window_end, args)
     finally:
         store.close()
+
+
+def _find_report_for_date(out_dir: Path, d: date) -> Path | None:
+    """Find an existing report file for a given date.
+
+    Looks for window-keyed filenames that span the given date (i.e. the
+    date falls within [window_start, window_end)).  Also checks the legacy
+    ``report-YYYY-MM-DD.md`` naming.
+    """
+    # Legacy naming: report-YYYY-MM-DD.md
+    legacy = out_dir / f"report-{d.isoformat()}.md"
+    if legacy.exists():
+        return legacy
+
+    # Window-keyed naming: report-{start}Z-{end}Z.md
+    # A window covers [start, end).  Match if d is in that range.
+    day_start = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    for p in sorted(out_dir.glob("report-*-Z.md"), reverse=True):
+        if p.name.startswith("merged-"):
+            continue
+        try:
+            stem = p.stem  # report-XXXXXXXXTXXXXZ-XXXXXXXXTXXXXZ
+            parts = stem.replace("report-", "").split("Z-")
+            if len(parts) != 2:
+                continue
+            ws = datetime.strptime(parts[0], "%Y%m%dT%H%M").replace(
+                tzinfo=timezone.utc)
+            we = datetime.strptime(parts[1], "%Y%m%dT%H%M").replace(
+                tzinfo=timezone.utc)
+            if ws <= day_start and day_end <= we:
+                return p
+        except ValueError:
+            continue
+    return None
+
+
+def _cmd_merge(cfg: AppConfig, store: Store, args) -> int:
+    """Merge existing daily reports into a single summary (no API calls for
+    existing reports; missing days are fetched individually)."""
+    now = datetime.now(timezone.utc)
+
+    if args.date:
+        d = date.fromisoformat(args.date)
+        dates = [d]
+    elif args.backfill:
+        start = (now - timedelta(days=args.backfill)).date()
+        dates = [start + timedelta(days=i) for i in range(args.backfill)]
+    else:
+        log.error("--merge requires --backfill or --date")
+        return 1
+
+    # Filter out dates before the interface cutoff
+    valid_dates = [d for d in dates if d > _INTERFACE_CUTOFF]
+    skipped = [d for d in dates if d <= _INTERFACE_CUTOFF]
+    if skipped:
+        log.info("skipped %d dates before interface cutoff %s",
+                 len(skipped), _INTERFACE_CUTOFF)
+    if not valid_dates:
+        log.error("no processable dates in range (all before %s)",
+                  _INTERFACE_CUTOFF)
+        return 1
+
+    out_dir = Path(cfg.report.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    all_reports: list[Path] = []
+
+    for d in valid_dates:
+        report_path = _find_report_for_date(out_dir, d)
+        if report_path is None:
+            log.info("report missing for %s, fetching...", d)
+            day_start = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+            day_end = day_start + timedelta(days=1)
+            # Temporarily override window args for the single-day run
+            saved = getattr(args, "window_start", None)
+            args.window_start = day_start
+            _run(cfg, store, day_start, day_end, args)
+            args.window_start = saved
+            report_path = _find_report_for_date(out_dir, d)
+        if report_path is not None:
+            all_reports.append(report_path)
+            log.info("include report: %s", report_path.name)
+        else:
+            log.warning("no report found for %s after fetch attempt", d)
+
+    if not all_reports:
+        log.error("no reports to merge")
+        return 1
+
+    # Parse break tables from all reports
+    all_rows: list[dict] = []
+    for p in all_reports:
+        rows = parse_break_table(p)
+        log.info("parsed %d break rows from %s", len(rows), p.name)
+        all_rows.extend(rows)
+
+    deduped = dedup_merged_rows(all_rows)
+
+    window_start = datetime(valid_dates[0].year, valid_dates[0].month,
+                            valid_dates[0].day, tzinfo=timezone.utc)
+    window_end = datetime(valid_dates[-1].year, valid_dates[-1].month,
+                          valid_dates[-1].day, tzinfo=timezone.utc) + timedelta(days=1)
+
+    report_date = date.today().isoformat()
+    report = render_merged_report(report_date, deduped,
+                                  raw_failed=len(all_rows),
+                                  window=(window_start, window_end))
+    window_key = window_slug(window_start, window_end)
+    out_path = out_dir / f"merged-report-{window_key}.md"
+    out_path.write_text(report, encoding="utf-8")
+    log.info("merged report written: %s", out_path)
+    print(f"done: merged {len(all_reports)} reports, "
+          f"{len(all_rows)} raw break records -> {len(deduped)} deduped "
+          f"-> {out_path}")
+    return 0
 
 
 def _dedup_by_sha(jobs: list[DashboardRun]) -> list[DashboardRun]:
@@ -286,12 +412,19 @@ def main(argv: list[str] | None = None) -> int:
                        help="scan the last N days instead of the default window")
     p_run.add_argument("--refetch", action="store_true",
                        help="re-process jobs already recorded in the store")
+    p_run.add_argument("--merge", action="store_true",
+                       help="merge existing daily reports (requires --backfill or --date)")
     p_run.add_argument("--dry-run", action="store_true",
                        help="collect the failure index only; fetch no logs, write nothing")
     p_run.add_argument("--config", help="path to config.yaml")
     p_run.set_defaults(func=cmd_run, window_start=None)
 
     args = parser.parse_args(argv)
+    if getattr(args, "merge", False):
+        if getattr(args, "refetch", False):
+            parser.error("--merge and --refetch are mutually exclusive")
+        if not getattr(args, "backfill", None) and not getattr(args, "date", None):
+            parser.error("--merge requires --backfill or --date")
     return args.func(args)
 
 
