@@ -302,7 +302,7 @@ class BreakFinding:
 
 | 部署形态 | 做法 | 适用 |
 | --- | --- | --- |
-| **GitHub Actions schedule（推荐）** | `cron` 触发，报告 commit 回仓库 + artifact 备份，见 6.1 | 无常驻机器时 |
+| **GitHub Actions schedule（推荐）** | `cron` 触发，报告 commit 回仓库，见 6.1 | 无常驻机器时 |
 | 本机/服务器 | Windows 任务计划程序 / crontab：`0 9 * * * ascend-ci-report run`，报告直接落本地 `reports/` | 日常使用 |
 | 手动 | `ascend-ci-report run [--date ...] [--backfill N]` | 补数、调试 |
 
@@ -316,7 +316,6 @@ class BreakFinding:
 | 方案 | 存储位置 | 可浏览性 | 保留期 | 结论 |
 | --- | --- | --- | --- | --- |
 | **commit 回仓库**（`reports/report-{window}.md`，窗口键控命名） | 仓库工作树，随 git 版本化 | 直接在 GitHub 网页浏览/搜索/对比 diff | 永久 | **采用（主方案）** |
-| Workflow artifact | Actions 运行页面附件 | 需进 run 页面下载 zip | 默认 90 天（最长 90） | 辅助备份，`if: always()` 上传含原始日志快照 |
 | GitHub Pages | 独立静态站点 | 浏览器直达 | 随 Pages | 可选增强（报告目录够用，v1 不做） |
 
 commit 回仓库要点：
@@ -325,7 +324,7 @@ commit 回仓库要点：
 2. **空提交抑制**：`git diff --cached --quiet || git commit ...`，无 break 时不产生空提交；
 3. **同窗口重跑**：直接覆盖同名 `report-{window}.md` 后新提交（该文件的 git diff 即"窗口内数据补齐后的变化"），不做 amend；不同窗口各为新文件互不覆盖；
 4. **报告索引**：可选维护 `reports/README.md` 索引表（日期 × break 数 × 链接），每次运行追加更新，方便从仓库首页点进最新报告；
-5. **历史追溯**：`reports/` 目录天然构成时间线，`git log reports/` 或 Blame 即可回看任何一天的失败情况——这是选 commit 方案而非 artifact 的核心理由。
+5. **历史追溯**：`reports/` 目录天然构成时间线，`git log reports/` 或 Blame 即可回看任何一天的失败情况。
 
 workflow 参考实现：
 
@@ -346,6 +345,11 @@ on:
         default: ''
       refetch:
         description: '忽略已处理记录，重新拉取日志并覆盖分析'
+        type: boolean
+        required: false
+        default: false
+      merge:
+        description: '汇总已有日报（搭配 backfill_days 使用，缺失天自动补充）'
         type: boolean
         required: false
         default: false
@@ -380,14 +384,10 @@ jobs:
           if [ "${{ inputs.refetch }}" = "true" ]; then
             ARGS="$ARGS --refetch"
           fi
+          if [ "${{ inputs.merge }}" = "true" ]; then
+            ARGS="$ARGS --merge"
+          fi
           ascend-ci-report run $ARGS
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: report-${{ github.run_id }}
-          path: |                              # artifact 路径相对仓库根
-            tools/ascend-npu-report/reports/
-            tools/ascend-npu-report/store/logs/
       - name: Commit reports
         working-directory: ${{ github.workspace }}   # git 操作回仓库根
         run: |
@@ -425,6 +425,44 @@ Actions 页面 → ascend-ci-report → Run workflow，三个输入（均留空 
 2. **refetch 的代价**：重拉窗口内全部失败 job 日志（约 1~2 分钟/天 + Buildkite API 消耗），且这些 job 重算后仍标记为已处理——常规增量不会重复碰它们，因此 refetch 是"重算"而非"额外处理"；
 3. **水位安全**：手动补历史日期不影响增量水位（水位取运行完成时刻，见 5.1）；
 4. **格式校验**：date 必须严格 `YYYY-MM-DD`，否则参数校验失败、run 直接报错退出（不会静默跑错窗口）。
+
+### 6.3 汇总模式（--merge）
+
+当需要跨多天汇总 break 报告时，使用 `--merge` 模式。该模式从已有日报的 Break 汇总表中解析并合并数据，避免重复调用 API。
+
+**使用方式：**
+
+```bash
+ascend-ci-report run --backfill 7 --merge
+```
+
+**执行流程：**
+
+1. 计算日期范围 `[now - N days, now]`
+2. 过滤：移除 <= 2026-09-03 的日期（CI 未上线 vllm-interface）
+3. 对范围内每个日期：
+   - 文件存在 → 直接使用
+   - 文件不存在 → 对该天跑完整 pipeline（单天 backfill）
+4. 解析所有日报的 Break 汇总表
+5. 按 build number 去重 + 按 PR number 去重（同 PR 保留最新 build）
+6. 渲染汇总报告，写入 `reports/merged-report-{window}.md`
+
+**输出格式：**
+
+- 文件名前缀 `merged-report-`，window 为整个汇总范围
+- 只包含 break 主表，不含附录 A/B
+- stats 行："汇总 N 天日报，共 M 条 break 记录（去重后 K 条）"
+
+**限制：**
+
+- `--merge` 与 `--refetch` 互斥
+- `--merge` 必须搭配 `--backfill` 或 `--date`
+- 2026-09-03 及之前的日期自动跳过
+
+**workflow 触发：**
+
+Actions 页面 → ascend-ci-report → Run workflow，勾选 `merge` 并填写 `backfill_days`。
+
 ## 7. 配置设计
 
 `config.yaml`（支持环境变量覆盖敏感项）：
