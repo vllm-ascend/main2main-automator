@@ -29,7 +29,7 @@ permissions:
   contents: write
 defaults:
   run:
-    working-directory: tools/ascend-npu-report   # 工具自包含目录（design.md 第 10 节）
+    working-directory: tools/ascend-npu-report   # 工具自包含目录（ascend-ci-report-design.md 第 10 节）
 jobs:
   report:
     runs-on: linux-aarch64-a2b3-8   # 自托管 ARM64 runner
