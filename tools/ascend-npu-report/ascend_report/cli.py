@@ -189,7 +189,7 @@ def _find_report_for_date(out_dir: Path, d: date) -> Path | None:
     # A window covers [start, end).  Match if d is in that range.
     day_start = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
     day_end = day_start + timedelta(days=1)
-    for p in sorted(out_dir.glob("report-*-Z.md"), reverse=True):
+    for p in sorted(out_dir.glob("report-*Z-*.md"), reverse=True):
         if p.name.startswith("merged-"):
             continue
         try:
