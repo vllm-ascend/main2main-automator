@@ -199,8 +199,8 @@ def render_report(report_date: str, records: list[ReportRecord],
              + f"其中 {len(included)} 次确认存在 break（已收录表格），"
              f"提取 break 条目 {findings_total} 条、待复核项 {review_total} 条。")
     if window:
-        w0 = window[0].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-        w1 = window[1].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+        w0 = window[0].astimezone(timezone.utc).strftime("%Y-%m-%d")
+        w1 = window[1].astimezone(timezone.utc).strftime("%Y-%m-%d")
         title = f"# Ascend NPU Test 失败报告 — {w0} ~ {w1}"
     else:
         title = f"# Ascend NPU Test 失败报告 — {report_date}"
@@ -341,8 +341,8 @@ def render_merged_report(report_date: str, rows: list[dict],
                          window: tuple[datetime, datetime] | None = None) -> str:
     """Render a merged report with only the break table, no appendices."""
     if window:
-        w0 = window[0].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-        w1 = window[1].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+        w0 = window[0].astimezone(timezone.utc).strftime("%Y-%m-%d")
+        w1 = window[1].astimezone(timezone.utc).strftime("%Y-%m-%d")
         title = f"# Ascend NPU Test 失败汇总报告 — {w0} ~ {w1}"
     else:
         title = f"# Ascend NPU Test 失败汇总报告 — {report_date}"

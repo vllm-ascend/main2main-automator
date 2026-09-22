@@ -136,9 +136,8 @@ def test_report_shows_query_window():
     window = (datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc),
               datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc))
     out = render_report("2026-09-04", records, window=window)
-    # window goes into the title line as well
-    assert ("# Ascend NPU Test 失败报告 — 2026-09-03T00:00Z ~ "
-            "2026-09-04T00:00Z") in out
+    # title stays readable while the full timestamp remains in the query window
+    assert "# Ascend NPU Test 失败报告 — 2026-09-03 ~ 2026-09-04" in out
     assert "查询时间窗：2026-09-03 00:00Z ~ 2026-09-04 00:00Z（UTC）" in out
     assert "2026-09-03 08:00 ~ 2026-09-04 08:00（北京时间，UTC+8）" in out
 
@@ -160,7 +159,7 @@ def test_window_slug_identity():
 # ---------------------------------------------------------------------------
 
 _SAMPLE_REPORT = """\
-# Ascend NPU Test 失败报告 — 2026-09-05T00:00Z ~ 2026-09-06T00:00Z
+# Ascend NPU Test 失败报告 — 2026-09-05 ~ 2026-09-06
 
 查询时间窗：2026-09-05 00:00Z ~ 2026-09-06 00:00Z（UTC）
 统计：本时间窗内共发现 10 次 Ascend NPU Test 失败运行，其中 2 次确认存在 break。
@@ -180,7 +179,7 @@ _SAMPLE_REPORT = """\
 """
 
 _SAMPLE_REPORT_2 = """\
-# Ascend NPU Test 失败报告 — 2026-09-06T00:00Z ~ 2026-09-07T00:00Z
+# Ascend NPU Test 失败报告 — 2026-09-06 ~ 2026-09-07
 
 查询时间窗：2026-09-06 00:00Z ~ 2026-09-07 00:00Z（UTC）
 统计：本时间窗内共发现 5 次 Ascend NPU Test 失败运行，其中 1 次确认存在 break。
@@ -193,7 +192,7 @@ _SAMPLE_REPORT_2 = """\
 """
 
 _SAMPLE_REPORT_NO_BREAKS = """\
-# Ascend NPU Test 失败报告 — 2026-09-07T00:00Z ~ 2026-09-08T00:00Z
+# Ascend NPU Test 失败报告 — 2026-09-07 ~ 2026-09-08
 
 统计：本时间窗内共发现 3 次 Ascend NPU Test 失败运行，其中 0 次确认存在 break。
 """
