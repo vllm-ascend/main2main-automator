@@ -160,10 +160,10 @@ def _appendix_b(records: list[ReportRecord]) -> str:
 
 
 def window_slug(start: datetime, end: datetime) -> str:
-    """Filename-safe window identity (UTC). Same window -> same name -> overwrite."""
-    f = "%Y%m%dT%H%M"
-    return (f"{start.astimezone(timezone.utc).strftime(f)}Z-"
-            f"{end.astimezone(timezone.utc).strftime(f)}Z")
+    """Filename-safe window identity (UTC, date-only for readability)."""
+    f = "%Y%m%d"
+    return (f"{start.astimezone(timezone.utc).strftime(f)}-"
+            f"{end.astimezone(timezone.utc).strftime(f)}")
 
 
 def _fmt_window(start: datetime, end: datetime) -> str:

@@ -154,19 +154,24 @@ def _cleanup_old_reports(out_dir: Path) -> None:
         return
     cutoff = date.today() - timedelta(days=_REPORT_RETENTION_DAYS)
     for p in sorted(out_dir.glob("*.md")):
-        # Strip known prefixes to get the window slug
         name = p.name
         for prefix in ("merged-report-", "report-"):
             if name.startswith(prefix):
                 name = name[len(prefix):]
                 break
-        # name should now be YYYYMMDDTHHMMZ-YYYYMMDDTHHMMZ
-        parts = name.split("Z-")
-        if len(parts) != 2:
+        stem = name.rsplit(".md", 1)[0]
+        match = re.match(r"^(?P<start>\d{8}(?:T\d{4}Z)?)-(?P<end>\d{8}(?:T\d{4}Z)?)$",
+                         stem)
+        if not match:
             continue
-        try:
-            window_start = datetime.strptime(parts[0], "%Y%m%dT%H%M").date()
-        except ValueError:
+        start_str = match.group("start")
+        for fmt in ("%Y%m%d", "%Y%m%dT%H%MZ"):
+            try:
+                window_start = datetime.strptime(start_str, fmt).date()
+                break
+            except ValueError:
+                continue
+        else:
             continue
         if window_start < cutoff:
             p.unlink()
@@ -185,23 +190,36 @@ def _find_report_for_date(out_dir: Path, d: date) -> Path | None:
     if legacy.exists():
         return legacy
 
-    # Window-keyed naming: report-{start}Z-{end}Z.md
-    # A window covers [start, end).  Match if d is in that range.
+    # Window-keyed naming: report-{start}-{end}.md
+    # Accept both date-only and legacy timestamped formats.
     day_start = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
     day_end = day_start + timedelta(days=1)
-    for p in sorted(out_dir.glob("report-*Z-*.md"), reverse=True):
+    for p in sorted(out_dir.glob("report-*.md"), reverse=True):
         if p.name.startswith("merged-"):
             continue
         try:
-            stem = p.stem  # report-XXXXXXXXTXXXXZ-XXXXXXXXTXXXXZ
-            parts = stem.replace("report-", "").split("Z-")
-            if len(parts) != 2:
+            stem = p.stem  # report-YYYYMMDD[-YYYYMMDD] or old timestamped format
+            m = re.match(r"^report-(?P<start>\d{8}(?:T\d{4}Z)?)-(?P<end>\d{8}(?:T\d{4}Z)?)$",
+                         stem)
+            if not m:
                 continue
-            ws = datetime.strptime(parts[0], "%Y%m%dT%H%M").replace(
-                tzinfo=timezone.utc)
-            we = datetime.strptime(parts[1].rstrip("Z"), "%Y%m%dT%H%M").replace(
-                tzinfo=timezone.utc)
-            if ws <= day_start and day_end <= we:
+            start_text, end_text = m.group("start"), m.group("end")
+            start_dt = None
+            end_dt = None
+            for fmt in ("%Y%m%d", "%Y%m%dT%H%MZ"):
+                try:
+                    if start_dt is None:
+                        start_dt = datetime.strptime(start_text, fmt).replace(
+                            tzinfo=timezone.utc)
+                    if end_dt is None:
+                        end_dt = datetime.strptime(end_text, fmt).replace(
+                            tzinfo=timezone.utc)
+                    break
+                except ValueError:
+                    continue
+            if start_dt is None or end_dt is None:
+                continue
+            if start_dt <= day_start and day_end <= end_dt:
                 return p
         except ValueError:
             continue
