@@ -147,7 +147,7 @@ def test_window_slug_identity():
     from ascend_report.reporter import window_slug
     w = (datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc),
          datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc))
-    assert window_slug(*w) == "20260903T0000Z-20260904T0000Z"
+    assert window_slug(*w) == "20260903-20260904"
     # same window -> same slug (overwrite); new window -> different slug
     assert window_slug(*w) == window_slug(w[0], w[1])
     assert window_slug(*w) != window_slug(
