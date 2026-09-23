@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 
 _INTERFACE_CUTOFF = date(2026, 9, 3)  # CI 未上线 vllm-interface 的截止日期
 _REPORT_RETENTION_DAYS = 90  # 保留最近 3 个月的报告
+_BEIJING = timezone(timedelta(hours=8))
 
 PR_NUM_RE = re.compile(r"\(#(\d+)\)\s*$")
 BRANCH_PR_RE = re.compile(r"(?:pull-request|^pr)[/-](\d+)")
@@ -292,7 +293,7 @@ def _cmd_merge(cfg: AppConfig, store: Store, args) -> int:
     window_end = datetime(valid_dates[-1].year, valid_dates[-1].month,
                           valid_dates[-1].day, tzinfo=timezone.utc) + timedelta(days=1)
 
-    report_date = date.today().isoformat()
+    report_date = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
     report = render_merged_report(report_date, deduped,
                                   raw_failed=len(all_rows),
                                   window=(window_start, window_end))
@@ -423,7 +424,7 @@ def _run(cfg: AppConfig, store: Store, window_start: datetime,
             job_id=run.job_id, build_number=run.build_number, state=run.state,
             web_url=run.web_url, pr=pr, analysis=analysis, source=index_source))
 
-    report_date = date.today().isoformat()
+    report_date = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
     report = render_report(report_date, records, raw_failed=total,
                            window=(window_start, window_end))
     out_dir = Path(cfg.report.output_dir)
