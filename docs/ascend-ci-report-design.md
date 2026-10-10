@@ -11,7 +11,7 @@ vLLM 的 Buildkite CI（对外展示于 https://ci.vllm.ai ）中有一个 **Asc
 本软件目标是**自动化**这一流程：
 
 1. 每天定时获取 CI 中 `Ascend NPU Test` 任务的执行结果；
-2. 发现失败任务时，拉取失败日志，提取其中 `vllm PR compatibility with vllm-ascend` 相关的日志段落；
+2. 发现目标 job 已完成时，拉取日志，提取其中 `vllm PR compatibility with vllm-ascend` 相关的日志段落；
 3. **仅当段落中确认存在 break 时**，整理成表格（含 PR 当前状态），生成以日期命名的报告文档。
 
 ## 2. 需求分析
@@ -21,9 +21,9 @@ vLLM 的 Buildkite CI（对外展示于 https://ci.vllm.ai ）中有一个 **Asc
 | 编号 | 需求 | 说明 |
 | --- | --- | --- |
 | FR-1 | 定时拉取 CI 结果 | 每天固定时间（默认，可配置）获取最近 24h 的 `Ascend NPU Test` job 状态 |
-| FR-2 | 失败日志获取 | 对 state 为 `failed` / `soft_failed` / `timed_out` 的 job，下载其完整日志 |
+| FR-2 | 完成运行日志获取 | 对 state 为 `passed` / `failed` / `soft_failed` / `timed_out` 等已完成状态的目标 job，下载其完整日志；运行状态不决定是否分析 break |
 | FR-3 | 日志段落提取 | 定位日志中 `vllm PR compatibility with vllm-ascend` 起始的段落，截取到下一个段落标记或日志结尾 |
-| FR-4 | break 内容提取与**收录过滤** | 解析段落中的 `Result: BREAKS FOUND` 与逐条 break finding；**仅存在 break 的记录才进入报告表格**，失败但无 break（如 infra 故障、`Result: PASS/REVIEW`、分析器错误）只计入统计，不进表格 |
+| FR-4 | break 内容提取与**收录过滤** | 解析段落中的 `Result: BREAKS FOUND` 与逐条 break finding；**仅存在 break 的记录才进入报告表格**，无 break 的运行不进主表；CI 失败数另行统计 |
 | FR-5 | PR 状态获取 | 由 `commit_sha` 经 GitHub API 反查关联 PR，获取当前状态（Open / Merged / Closed）、标题、作者，写入表格 |
 | FR-6 | 报告生成 | 生成 Markdown 报告，**表格仅含存在 break 的条目**并带 PR 状态，文件名以日期命名（如 `report-2026-09-03.md`） |
 | FR-7 | 幂等与去重 | 同一 job 同一天重复运行不产生重复条目；跨天运行可回补漏报 |
@@ -49,12 +49,12 @@ vLLM 的 Buildkite CI（对外展示于 https://ci.vllm.ai ）中有一个 **Asc
   - 定义：`.buildkite/hardware_tests/ascend_npu.yaml`，`label: "Ascend NPU Test"`，`key: ascend-npu-test`，**`soft_fail: true`**（失败时 job 状态为 `soft_failed`，必须纳入失败判定）
   - 执行脚本：`.buildkite/scripts/hardware_ci/run-npu-test.sh`（构建 Ascend NPU 镜像，clone vllm-ascend，运行兼容性/推理 sanity check，并输出兼容性日志）
 
-### 3.2 选型对比（已按用户方案修订：Dashboard 索引 → Buildkite 日志）
+### 3.2 选型对比（Dashboard 运行索引 → Buildkite 日志）
 
 | 方案 | 优点 | 缺点 | 结论 |
 | --- | --- | --- | --- |
-| A. **Dashboard `/api/jobs/runs` 查失败索引 + Buildkite API 拉日志** | 索引侧零 token（已实测线上 200）；dashboard 仓库同步了全部 job 运行记录，天然覆盖"并非每个 build 都有该 job"的动态 pipeline 场景；`job_id`/`web_url`/`state`/`commit_sha` 字段齐全，与 Buildkite 日志端点直接衔接 | 依赖 dashboard 部署可用性；Fivetran→Databricks 同步有延迟；`soft_failed` 状态被其查询过滤（见 5.1 交叉校验） | **采用（索引主数据源）** |
-| B. Buildkite REST API 按 build 扫描 | 官方接口、状态实时 | 每日全量 build 详情分页扫描；动态生成的 job 是否存在需要自行枚举判断；token 必需 | 降级为**日志抓取 + soft_failed 交叉校验** |
+| A. **Dashboard `/api/jobs/runs` 查目标 job 运行 + Buildkite API 拉日志** | 索引侧零 token（已实测线上 200）；dashboard 仓库同步了全部 job 运行记录，天然覆盖"并非每个 build 都有该 job"的动态 pipeline 场景；`job_id`/`web_url`/`state`/`commit_sha` 字段齐全，与 Buildkite 日志端点直接衔接 | 依赖 dashboard 部署可用性；Fivetran→Databricks 同步有延迟；`soft_failed` 状态被其查询过滤（见 5.1 交叉校验） | **采用（索引主数据源）** |
+| B. Buildkite REST API 按 build 扫描 | 官方接口、状态实时 | 每日需分页扫描多个 build 状态；动态生成的 job 是否存在需要自行枚举判断；token 必需 | 降级为**日志抓取 + Dashboard 漏数交叉校验** |
 | C. 抓取 ci.vllm.ai 页面 SSR/HTML | — | 脆弱，无必要（API 直接可用） | 不采用 |
 
 **线上实测记录（2026-09-04）**：`GET https://ci.vllm.ai/api/jobs/runs?jobName=Ascend%20NPU%20Test&pipeline=CI&branch=main&startDate=2026-08-28&endDate=2026-09-04` → HTTP 200，返回 81 条 `failed` 运行，字段：`job_id, web_url, state, started_at, finished_at, duration_secs, commit_sha, build_created_at`；`web_url` 形如 `https://buildkite.com/vllm/ci/builds/85905?jid=<job_id>`，build 号可直接解析。
@@ -63,7 +63,7 @@ vLLM 的 Buildkite CI（对外展示于 https://ci.vllm.ai ）中有一个 **Asc
 
 | 用途 | 端点 |
 | --- | --- |
-| 列出 build | `GET /v2/organizations/{org}/pipelines/{pipeline}/builds?branch=main&state=failed&created_from=...` |
+| 列出 build | `GET /v2/organizations/{org}/pipelines/{pipeline}/builds?branch=main&state={single_state}&created_from=...` |
 | build 详情（含 jobs 列表） | `GET /v2/organizations/{org}/pipelines/{pipeline}/builds/{number}` |
 | job 日志 | `GET /v2/organizations/{org}/pipelines/{pipeline}/builds/{number}/jobs/{job_id}/log` |
 
@@ -75,7 +75,7 @@ vLLM 的 Buildkite CI（对外展示于 https://ci.vllm.ai ）中有一个 **Asc
 
 ```
 ┌────────────┐   ┌─────────────────────────┐   ┌──────────────────┐   ┌─────────────┐   ┌──────────────┐
-│  Scheduler │──▶│  Collector（失败索引）  │──▶│  Log Fetcher     │──▶│  Analyzer   │──▶│  Reporter    │
+│  Scheduler │──▶│  Collector（目标 job）  │──▶│  Log Fetcher     │──▶│  Analyzer   │──▶│  Reporter    │
 │ (cron/计划 │   │ ① Dashboard /api/jobs/  │   │ Buildkite API    │   │ 段落提取 +  │   │ Markdown 表格│
 │  任务等)   │   │    runs 查 job 运行记录 │   │ 按build号+job_id │   │ 结构化解析  │   │ 按日期落盘   │
 └────────────┘   │ ② Buildkite builds 扫描 │   │  抓日志+重试限速 │   └──────┬──────┘   └──────┬───────┘
@@ -87,7 +87,7 @@ vLLM 的 Buildkite CI（对外展示于 https://ci.vllm.ai ）中有一个 **Asc
                     │        Store（本地状态：SQLite/JSON，记录已处理 job、原始日志快照）   │
                     └─────────────────────────────────────────────────────────────────────┘
 
-外部依赖：ci.vllm.ai（无需鉴权，仅读失败索引）  |  api.buildkite.com（需 token，读日志+校验）
+外部依赖：ci.vllm.ai（无需鉴权，仅读目标 job 运行索引）  |  api.buildkite.com（需 token，读日志+校验）
 ```
 
 - **单进程 CLI 工具** + 外部调度（Windows 任务计划 / crontab / GitHub Actions schedule），不内置常驻服务，降低部署成本。
@@ -95,29 +95,31 @@ vLLM 的 Buildkite CI（对外展示于 https://ci.vllm.ai ）中有一个 **Asc
 
 ## 5. 模块设计
 
-### 5.1 Collector（失败索引）
+### 5.1 Collector（目标 job 运行索引）
 
 输入：配置（dashboard URL、jobName、pipeline、branch、时间窗）。
-**设计动机**：`Ascend NPU Test` 并非每个 build 都有（pipeline 由 ci_config 动态生成），因此**不按 build 枚举任务**，而是以 job 为查询主体——先从 Dashboard 查到该 job 的全部失败运行记录，再定向拉日志。两路合并：
+**设计动机**：`Ascend NPU Test` 并非每个 build 都有（pipeline 由 ci_config 动态生成），因此**不按 build 枚举任务**，而是以 job 为查询主体——收集该 job 在时间窗内的已完成运行（包含 `passed`），再定向拉日志。是否进入主表由 Analyzer 的 break 结果决定，而不是 job 状态。两路合并：
 
 1. **主路——Dashboard `/api/jobs/runs`**（无需鉴权，已实测）：
    `GET {dashboard}/api/jobs/runs?jobName=Ascend NPU Test&pipeline=CI&branch=main&startDate={d}&endDate={d+1}`
    注意参数语义：`pipeline=CI` 是 dashboard 里的 pipeline **名称**（非 Buildkite slug）；`startDate/endDate` 为 `YYYY-MM-DD`，endDate 为闭区间按天取整；返回每条运行含 `job_id / web_url / state / started_at / finished_at / duration_secs / commit_sha / build_created_at`。
-2. **辅路——Buildkite builds 扫描交叉校验**（需 token，可用 `state=failed,failing` 过滤缩小范围）：
-   - 补 `soft_failed`：dashboard 的 runs 查询状态过滤为 `IN ('passed','failed','failing','broken','timed_out')`，**不包含 `soft_failed`**，而 Ascend job 是 `soft_fail: true`，可能产生 soft_failed 状态；
-   - 补**同步延迟**：Fivetran→Databricks 仓库入库有分钟级~小时级延迟，当天的失败可能查不到，Buildkite 实时侧兜底。
+   只保留 `analysis_states` 配置中的已完成状态（默认 `passed, failed, soft_failed, timed_out, broken, failing`），运行中的 job 不分析。
+2. **辅路——Buildkite builds 扫描交叉校验**（需 token，按单个 build 状态分别查询）：
+   - 查 `passed`、`failed`、`failing` build 后按 `step_key`/名称定位目标 job，再按 `analysis_states` 过滤 job 状态；Buildkite 的 `state` 参数只接受单值；
+   - 补 `soft_failed`：dashboard 的 runs 查询不返回 `soft_failed`，而 Ascend job 是 `soft_fail: true`，由 Buildkite 辅路兜底；
+   - 补**同步延迟**：Fivetran→Databricks 仓库入库有分钟级~小时级延迟，当天运行可能查不到，Buildkite 实时侧兜底。
 3. **合并去重**：以 `job_id`（Buildkite 全局 UUID）为主键合并两路结果，`build_number` 从 `web_url`（`/builds/{number}?jid=...`）解析；辅路记录来源标记 `source ∈ {dashboard, buildkite, both}` 写入审计。
 4. **同 PR 去重（按需求：多次执行只看最新一次）**，两层：
    - **Pass 1（PR 解析前，零成本）**：同一 `commit_sha` 的多次运行（如同一 build 的 rerun / 多 job）只保留 `build_number` 最新的一次，避免无谓的日志拉取；
    - **Pass 2（PR 解析后）**：不同 commit 解析到同一 PR（force-push 换 sha、merge 后重跑）时，按 PR 分组只保留最新一次；被取代的旧记录不进主表/附录，仅在日志记录 `superseded`；
    - PR 反查失败的记录不参与 Pass 2（无法判定同 PR，各自独立保留）；
-   - 报告统计行同时展示原始失败数与去重后分析数。
-5. 失败判定：`state ∈ {failed, soft_failed, timed_out, broken, failing}`。
-6. 输出 `FailedJob` 列表：
+   - 报告统计行同时展示已完成运行数、CI 失败数与去重后分析数。
+5. 失败统计：`state ∈ {failed, soft_failed, timed_out, broken, failing}`；分析采集状态由 `analysis_states` 单独配置。
+6. 输出 `TargetJobRun` 列表：
 
 ```python
 @dataclass
-class FailedJob:
+class TargetJobRun:
     job_id: str          # Buildkite 全局唯一 job id，去重主键
     build_number: int    # 从 web_url 解析
     pipeline: str
@@ -142,7 +144,7 @@ PR 解析与状态获取（GitHub API；认证后限速 1000–5000 次/小时�
 
 ### 5.2 Log Fetcher（日志抓取）
 
-- 对每个 `FailedJob` 调 job log 端点，循环分页取完整 `content`；
+- 对每个已完成的 `TargetJobRun` 调 job log 端点，循环分页取完整 `content`；
 - 指数退避重试（初始 2s，最多 5 次），429 读取 `Retry-After`；
 - 原始日志按 `store/logs/{date}/{build_number}_{job_id}.log` 落盘快照；
 - 去重：`Store` 中已存在的 `job_id` 直接跳过下载（支持 `--refetch` 强制重取）。
@@ -240,23 +242,25 @@ class BreakFinding:
     raw_text: str             # 原始片段（结构化失败时的整段/上下文）
 ```
 
-5. **收录判定（进表格的硬性门槛）**：一条失败记录进入报告主表当且仅当 `result == "BREAKS FOUND"` 且解析出 ≥1 条 break finding。其它情况（PASS/REVIEW、分析器错误、section_not_found）只统计不进主表。该判定在 Analyzer 输出中固化为 `included_in_table: bool` 字段，Reporter 不再做二次推断。
+5. **收录判定（进表格的硬性门槛）**：一条已完成运行进入报告主表当且仅当 `result == "BREAKS FOUND"` 且解析出 ≥1 条 break finding，与 job 状态无关。普通 `passed + PASS` 只计入运行数，不进附录；REVIEW、CI 失败但无 break、分析器错误和 section_not_found 只计入统计或附录。主表不展示 job 状态。该判定在 Analyzer 输出中固化为 `included_in_table: bool` 字段，Reporter 不再做二次推断。
 
 ### 5.4 Reporter（报告生成）
 
 - 输出目录：`reports/`（相对路径在加载时锚定到工具目录，与运行 cwd 无关）；
 - **文件名以时间窗命名**：`report-{window}.md`，`{window}` 为 UTC 窗口标识（如 `report-20260903T0000Z-20260904T0000Z.md`）。同一窗口重跑覆盖同名文件（数据补齐后的最新版），不同窗口生成新文件、互不覆盖；
-- 报告标题含时间窗（`# Ascend NPU Test 失败报告 — 2026-09-03T00:00Z ~ 2026-09-04T00:00Z`），正文首节给出双时区窗口详情；
+- 报告标题含时间窗（`# Ascend NPU Test 兼容性分析报告 — 2026-09-03T00:00Z ~ 2026-09-04T00:00Z`），正文首节给出双时区窗口详情；
 - 报告结构：
 
 ```markdown
-# Ascend NPU Test 失败报告 — 2026-09-03T00:00Z ~ 2026-09-04T00:00Z
+# Ascend NPU Test 兼容性分析报告 — 2026-09-03T00:00Z ~ 2026-09-04T00:00Z
 
 查询时间窗：2026-09-03 00:00Z ~ 2026-09-04 00:00Z（UTC） / 2026-09-03 08:00 ~ 2026-09-04 08:00（北京时间，UTC+8）
 
-统计：过去 24h 共发现 N 次 Ascend NPU Test 失败运行，其中 K 次确认存在 break（已收录表格）。
+统计：过去 24h 共采集 N 次已完成的 Ascend NPU Test 运行（其中 CI 失败 F 次），其中 K 次确认存在 break（已收录表格）。
 
 ## Break 汇总表（仅收录确认存在 break 的记录）
+
+通过运行中解析到的 break 同样进入本表；普通 `passed + PASS` 只计入统计，不进入本表或附录。主表不展示 job 状态。
 
 | Build | PR | PR 状态 | PR 标题 | Breaks | Priority | vLLM API 变更 | vllm-ascend 受影响代码 | 影响说明 | Review reason | 日志链接 |
 | ----- | -- | ------- | ------- | ------ | -------- | ------------- | ---------------------- | -------- | ------------- | -------- |
@@ -265,9 +269,9 @@ class BreakFinding:
 - **收录规则（硬性）**：只有 Analyzer 判定 `Result: BREAKS FOUND` 且成功解析出至少一条 break finding 的记录才进入本表；失败但无 break（`Result: PASS/REVIEW`、分析器错误 `interface analysis failed`、`section_not_found`）一律不进表，仅计入统计与附录。
 - **Review reason 列**：日志 result 段的 `## Items for review` 条目与 break 条目同构、可与 break 并存（实测 BREAKS FOUND 日志也常带 review 项）。解析时按 `##` 父段落拆分为 breaks 与 review items 两类，本列展示该记录 review 条目的 `Review reason:` 内容（去重、超 110 字符截断）；无 review 项时为 `—`。附录 A 同样带此列（REVIEW 记录在此可读）。统计行额外给出"待复核项 N 条"。
 - **PR 状态列**：取 GitHub 查询时刻的实时状态——`Open`（待合入，PR 作者可修）/ `Merged`（已合入 main，break 已进入主干，处置优先级最高）/ `Closed`（已放弃）。PR 状态排序建议：Merged > Open > Closed。
-- 同一 PR 多个失败 build 时合并为一行（Breaks 取条目并集，Build 列列出全部关联 build 号），避免表格被同一 PR 刷屏。
+- 同一 PR 多个 break build 时合并为一行（Breaks 取条目并集，Build 列列出全部关联 build 号），避免表格被同一 PR 刷屏。
 
-## 附录 A：失败但无 break 的记录（不进主表，仅备查）
+## 附录 A：待复核或 CI 失败但无 break 的记录（不进主表，仅备查）
 
 | Build | PR | PR 状态 | Job 状态 | 原因 | 链接 |
 | ----- | -- | ------- | -------- | ---- | ---- |
@@ -475,14 +479,16 @@ dashboard:
   pipeline: CI                          # dashboard 侧的 pipeline 名称（非 Buildkite slug）
   branch: main
 buildkite:
-  api_token_env: BUILDKITE_API_TOKEN   # 仅用于拉日志 + soft_failed 交叉校验，read_builds scope
+  api_token_env: BUILDKITE_API_TOKEN   # 用于拉日志 + 交叉校验，read_builds scope
   org: vllm
   pipeline_slug: ci
   branch: main
   cross_check: true                    # 开关：是否做 Buildkite 侧扫描校验
+  cross_check_states: [passed, failed, failing]
 job:
   name: "Ascend NPU Test"              # Dashboard jobName 参数（精确匹配）
   step_key: ascend-npu-test            # Buildkite 侧交叉校验时的匹配键
+  analysis_states: [passed, failed, soft_failed, timed_out, broken, failing]
   failure_states: [failed, soft_failed, timed_out, broken, failing]
 analysis:
   section_start_patterns:
@@ -530,7 +536,7 @@ GitHub Actions 侧：
 
 | 场景 | 处理 |
 | --- | --- |
-| Dashboard API 5xx/超时/失败索引为空 | 指数退避重试 ≤ 5 次；仍失败则降级走 Buildkite builds 扫描（token 必需），并在审计中记录降级 |
+| Dashboard API 5xx/超时/运行索引为空 | 指数退避重试 ≤ 5 次；仍失败则降级走 Buildkite builds 扫描（token 必需），并在审计中记录降级 |
 | Buildkite API 401/403 | 直接失败退出并提示 token 问题（不重试） |
 | Buildkite API 429/5xx/网络 | 指数退避重试 ≤ 5 次，429 读 `Retry-After` |
 | build 号解析失败（web_url 格式变化） | 该条目跳过拉日志、标注 `unparseable_url`，进报告"人工核查"小节 |
@@ -562,7 +568,7 @@ main2main-automator/
         │   ├── __init__.py
         │   ├── cli.py             # 入口：run / backfill
         │   ├── config.py          # 配置加载
-        │   ├── dashboard.py       # ci.vllm.ai /api/jobs/runs 客户端（失败索引）
+        │   ├── dashboard.py       # ci.vllm.ai /api/jobs/runs 客户端（目标 job 运行索引）
         │   ├── buildkite.py       # Buildkite API 客户端（日志抓取 + 交叉校验）
         │   ├── github.py          # PR 反查（commit_sha → PR 状态）
         │   ├── analyzer.py        # 段落提取 + 结构化解析 + 收录判定
@@ -588,7 +594,7 @@ main2main-automator/
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
-| M1 | Dashboard 客户端 + 失败索引采集（含 Buildkite 交叉校验） | 能列出指定时间窗内全部 `Ascend NPU Test` 失败（含 soft_failed），并给出 build 号与 job_id |
+| M1 | Dashboard 客户端 + 目标 job 运行采集（含 Buildkite 交叉校验） | 能列出指定时间窗内已完成的 `Ascend NPU Test` 运行（含 passed 与 soft_failed），并给出 build 号与 job_id |
 | M2 | 日志抓取 + Analyzer | 段落提取与 break 匹配在真实日志 fixture 上通过 |
 | M3 | PR 状态获取 + Reporter + Store + 调度接入 | 主表仅含存在 break 的条目且带实时 PR 状态（Open/Merged/Closed）；每日自动产出 `reports/report-*.md`，重跑幂等 |
 | M4（可选） | IM webhook 通知、多 pipeline（vllm-ascend 仓）扩展 | — |

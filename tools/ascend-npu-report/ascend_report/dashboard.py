@@ -1,4 +1,4 @@
-"""ci.vllm.ai dashboard client: /api/jobs/runs failure index (no auth needed).
+"""ci.vllm.ai dashboard client: /api/jobs/runs target-job index (no auth needed).
 
 Verified live (2026-09-04): GET {base}/api/jobs/runs?jobName=Ascend NPU Test
 &pipeline=CI&branch=main&startDate=...&endDate=... returns
@@ -74,7 +74,8 @@ class DashboardClient:
             ))
         return runs
 
-    def fetch_failed_runs(self, start_date: date, end_date: date,
-                          failure_states: list[str]) -> list[DashboardRun]:
+    def fetch_analyzable_runs(self, start_date: date, end_date: date,
+                              analysis_states: list[str]) -> list[DashboardRun]:
         runs = self.fetch_runs(start_date, end_date)
-        return [r for r in runs if r.state in failure_states and r.build_number is not None]
+        return [r for r in runs
+                if r.state in analysis_states and r.build_number is not None]

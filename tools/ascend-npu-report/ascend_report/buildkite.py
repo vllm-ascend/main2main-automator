@@ -1,7 +1,7 @@
 """Buildkite REST API client: cross-check scan + job log fetching.
 
 Endpoints used (all read-only, read_builds scope):
-  GET /v2/organizations/{org}/pipelines/{pipeline}/builds?state=failed,failing&created_from=...
+    GET /v2/organizations/{org}/pipelines/{pipeline}/builds?state=passed&created_from=...
   GET /v2/organizations/{org}/pipelines/{pipeline}/builds/{number}
   GET /v2/organizations/{org}/pipelines/{pipeline}/builds/{number}/jobs/{job_id}/log
 """
@@ -128,15 +128,15 @@ class BuildkiteClient:
                              build_number=build.get("number", 0))
         return None
 
-    def scan_failed_jobs(self, created_from: datetime,
-                         failure_states: list[str],
+    def scan_target_jobs(self, created_from: datetime,
+                         analysis_states: list[str],
                          created_to: datetime | None = None) -> list[BKJob]:
-        """Cross-check pass: find target jobs in failure states within window."""
+        """Cross-check pass: find completed target jobs in the analysis window."""
         found: list[BKJob] = []
         for build in self.iter_builds(created_from, self.cfg.cross_check_states,
                                       created_to=created_to):
             job = self.match_job(build)
-            if job and job.state in failure_states:
+            if job and job.state in analysis_states:
                 found.append(job)
         return found
 

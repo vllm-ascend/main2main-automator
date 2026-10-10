@@ -6,11 +6,11 @@ vllm/vllm-ascend main2main automator
 
 每个工具是 `tools/` 下的自包含目录（代码、配置、测试、workflow 副本），互不依赖。
 
-### ascend-npu-report — Ascend NPU Test 失败监控与 break 报告
+### ascend-npu-report — Ascend NPU Test 兼容性分析与 break 报告
 
-每日定时巡检 vLLM CI 中的 `Ascend NPU Test`，在失败日志中提取 **vLLM PR 与 vllm-ascend 的接口兼容性分析结果**，将确认存在 break 的 PR 整理成表格报告。
+每日定时巡检 vLLM CI 中已完成的 `Ascend NPU Test` 运行（包括通过运行），提取 **vLLM PR 与 vllm-ascend 的接口兼容性分析结果**，将确认存在 break 的 PR 整理成表格报告。CI 失败数单独统计，主表不展示 job 状态。
 
-- **数据源**：[ci.vllm.ai](https://ci.vllm.ai/jobs) 失败索引（免 token）+ Buildkite API 交叉校验与日志拉取（需 token）
+- **数据源**：[ci.vllm.ai](https://ci.vllm.ai/jobs) 目标 job 运行索引（免 token）+ Buildkite API 交叉校验与日志拉取（需 token）
 - **报告内容**：主表仅收录解析出 break 的记录（PR 编号/状态、break 数、vLLM API 变更、vllm-ascend 受影响代码、影响说明、日志链接）；同 PR 多次执行只保留最新一次
 - **PR 状态**：由 commit 反查 GitHub 实时状态（Open / Merged / Closed），已合入 PR 带 break 优先处理
 - **部署**：GitHub Actions 每日 09:00（北京时间）定时运行，报告 commit 回本仓 `tools/ascend-npu-report/reports/`
