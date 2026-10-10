@@ -58,21 +58,22 @@ def _compute_window(cfg: AppConfig, args) -> tuple[datetime, datetime]:
     return now - timedelta(hours=cfg.schedule.lookback_default_hours), now
 
 
-def _collect_failed_jobs(cfg: AppConfig, window_start: datetime,
+def _collect_target_jobs(cfg: AppConfig, window_start: datetime,
                          window_end: datetime) -> tuple[list[DashboardRun], str]:
-    """Primary: dashboard index. Fallback: Buildkite scan. Returns (jobs, source)."""
+    """Collect completed target-job runs. Returns (jobs, source)."""
     dash = DashboardClient(cfg.dashboard, cfg.job)
     try:
-        runs = dash.fetch_failed_runs(window_start.date(), window_end.date(),
-                                      cfg.job.failure_states)
+        runs = dash.fetch_analyzable_runs(window_start.date(), window_end.date(),
+                                          cfg.job.analysis_states)
         return runs, "dashboard"
     except Exception as exc:  # noqa: BLE001 - degrade per design section 8
         log.warning("dashboard index failed (%s: %s)", type(exc).__name__, exc)
         if not cfg.buildkite.cross_check:
             raise
-    log.info("degrading to Buildkite builds scan for the failure index")
+    log.info("degrading to Buildkite builds scan for the target-job index")
     bk = BuildkiteClient(cfg.buildkite, cfg.job)
-    jobs = bk.scan_failed_jobs(window_start, cfg.job.failure_states)
+    jobs = bk.scan_target_jobs(window_start, cfg.job.analysis_states,
+                               created_to=window_end)
     runs = [DashboardRun(job_id=j.job_id, web_url=j.web_url or "", state=j.state,
                          started_at=None, finished_at=None, commit_sha=None,
                          build_number=j.build_number)
@@ -82,7 +83,7 @@ def _collect_failed_jobs(cfg: AppConfig, window_start: datetime,
 
 def _cross_check(cfg: AppConfig, window_start: datetime, window_end: datetime,
                  jobs: list[DashboardRun]) -> list[DashboardRun]:
-    """Merge Buildkite-side scan results (catches states the dashboard misses)."""
+    """Merge Buildkite-side scan results (catches runs the dashboard misses)."""
     if not cfg.buildkite.cross_check:
         return jobs
     try:
@@ -92,7 +93,7 @@ def _cross_check(cfg: AppConfig, window_start: datetime, window_end: datetime,
         return jobs
     known = {j.job_id for j in jobs}
     merged = list(jobs)
-    for j in bk.scan_failed_jobs(window_start, cfg.job.failure_states,
+    for j in bk.scan_target_jobs(window_start, cfg.job.analysis_states,
                                  created_to=window_end):
         if j.job_id in known:
             continue
@@ -344,19 +345,20 @@ def _run(cfg: AppConfig, store: Store, window_start: datetime,
     if not args.dry_run:
         store.start_run(run_id, window_start.isoformat(), window_end.isoformat())
 
-    jobs, index_source = _collect_failed_jobs(cfg, window_start, window_end)
+    jobs, index_source = _collect_target_jobs(cfg, window_start, window_end)
     jobs = _cross_check(cfg, window_start, window_end, jobs)
     jobs.sort(key=lambda j: (j.build_number or 0, j.job_id), reverse=True)
     total = len(jobs)
+    failed_total = sum(j.state in cfg.job.failure_states for j in jobs)
     jobs = _dedup_by_sha(jobs)   # pass 1: same commit rerun -> newest only
-    log.info("failed jobs in window: %d (%d after same-commit dedup; source: %s)",
-             total, len(jobs), index_source)
+    log.info("completed target jobs in window: %d (%d CI failures; %d after same-commit dedup; source: %s)",
+             total, failed_total, len(jobs), index_source)
 
     if args.dry_run:
         for j in jobs:
             print(f"build #{j.build_number} | {j.state:<12} | {j.job_id} | "
                   f"sha={j.commit_sha} | {j.web_url}")
-        print(f"total: {len(jobs)} failed runs after same-commit dedup "
+        print(f"total: {len(jobs)} target-job runs after same-commit dedup "
               f"({total} raw; dry-run, nothing processed)")
         return 0
 
@@ -425,7 +427,8 @@ def _run(cfg: AppConfig, store: Store, window_start: datetime,
             web_url=run.web_url, pr=pr, analysis=analysis, source=index_source))
 
     report_date = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
-    report = render_report(report_date, records, raw_failed=total,
+    report = render_report(report_date, records, raw_runs=total,
+                           raw_failed=failed_total,
                            window=(window_start, window_end))
     out_dir = Path(cfg.report.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -437,12 +440,13 @@ def _run(cfg: AppConfig, store: Store, window_start: datetime,
         out_path.write_text(report, encoding="utf-8")
         log.info("report written: %s", out_path)
     else:
-        log.info("no failures in window; report skipped")
+        log.info("no completed target-job runs in window; report skipped")
 
     included = sum(1 for r in records if r.analysis and r.analysis.included_in_table)
-    store.finish_run(run_id, ok=True, runs_scanned=len(jobs),
-                     failures=len(records), findings=findings_total)
-    print(f"done: {len(jobs)} failed runs, {included} with breaks, "
+    store.finish_run(run_id, ok=True, runs_scanned=total,
+                     failures=failed_total, findings=findings_total)
+    print(f"done: {len(jobs)} target-job runs ({failed_total} CI failures), "
+          f"{included} with breaks, "
           f"{findings_total} findings -> {out_path}")
     return 0
 

@@ -20,12 +20,18 @@ class BuildkiteConfig(BaseModel):
     pipeline_slug: str = "ci"
     branch: str = "main"
     cross_check: bool = True
-    cross_check_states: list[str] = Field(default_factory=lambda: ["failed", "failing"])
+    cross_check_states: list[str] = Field(
+        default_factory=lambda: ["passed", "failed", "failing"]
+    )
 
 
 class JobConfig(BaseModel):
     name: str = "Ascend NPU Test"
     step_key: str = "ascend-npu-test"
+    analysis_states: list[str] = Field(
+        default_factory=lambda: ["passed", "failed", "soft_failed", "timed_out",
+                                 "broken", "failing"]
+    )
     failure_states: list[str] = Field(
         default_factory=lambda: ["failed", "soft_failed", "timed_out", "broken", "failing"]
     )

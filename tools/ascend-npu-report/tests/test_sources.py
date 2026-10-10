@@ -17,7 +17,7 @@ def test_parse_build_number():
     assert parse_build_number("https://example.com/other") is None
 
 
-def test_dashboard_fetch_filters_failures():
+def test_dashboard_fetch_filters_to_analyzable_runs():
     payload = {"runs": [
         {"job_id": "j1", "web_url": "https://buildkite.com/vllm/ci/builds/10?jid=j1",
          "state": "failed", "started_at": None, "finished_at": None,
@@ -25,6 +25,9 @@ def test_dashboard_fetch_filters_failures():
         {"job_id": "j2", "web_url": "https://buildkite.com/vllm/ci/builds/11?jid=j2",
          "state": "passed", "started_at": None, "finished_at": None,
          "duration_secs": 60, "commit_sha": "abd", "build_created_at": None},
+        {"job_id": "j3", "web_url": "https://buildkite.com/vllm/ci/builds/12?jid=j3",
+         "state": "running", "started_at": None, "finished_at": None,
+         "duration_secs": 10, "commit_sha": "abe", "build_created_at": None},
     ]}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -37,11 +40,11 @@ def test_dashboard_fetch_filters_failures():
                              client=httpx.Client(
                                  base_url="https://ci.vllm.ai",
                                  transport=httpx.MockTransport(handler)))
-    failed = client.fetch_failed_runs(date(2026, 9, 3), date(2026, 9, 4),
-                                      ["failed", "soft_failed"])
-    assert [r.job_id for r in failed] == ["j1"]
-    assert failed[0].build_number == 10
-    assert failed[0].commit_sha == "abc"
+    runs = client.fetch_analyzable_runs(
+        date(2026, 9, 3), date(2026, 9, 4), ["passed", "failed", "soft_failed"])
+    assert [r.job_id for r in runs] == ["j1", "j2"]
+    assert runs[0].build_number == 10
+    assert runs[0].commit_sha == "abc"
 
 
 def test_store_idempotency_and_audit(tmp_path):
@@ -71,7 +74,7 @@ def test_cross_check_url_and_match(tmp_path):
         "web_url": "https://buildkite.com/vllm/ci/builds/87028",
         "jobs": [{"id": "01a065ff-efc4-425c-b9c6-cb2e6f92fafe",
                   "name": "Ascend NPU Test", "step_key": "ascend-npu-test",
-                  "state": "failed",
+                  "state": "passed",
                   "web_url": "https://buildkite.com/vllm/ci/builds/87028#j"}],
     }]
     seen: dict = {}
@@ -80,8 +83,8 @@ def test_cross_check_url_and_match(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         urls.append(str(request.url))
         seen["auth"] = request.headers.get("Authorization")
-        # only the state=failed request carries the fixture build
-        payload = build_payload if "state=failed" in str(request.url) else []
+        # The passed build query exposes the target job despite its successful state.
+        payload = build_payload if "state=passed" in str(request.url) else []
         return httpx.Response(200, json=payload)
 
     import os
@@ -89,13 +92,16 @@ def test_cross_check_url_and_match(tmp_path):
     client = BuildkiteClient(cfg.buildkite, cfg.job,
                              client=httpx.Client(base_url="https://api.buildkite.com",
                                                  transport=httpx.MockTransport(handler)))
-    jobs = client.scan_failed_jobs(
-        datetime(2026, 9, 3, tzinfo=timezone.utc), ["failed", "failing"])
+    jobs = client.scan_target_jobs(
+        datetime(2026, 9, 3, tzinfo=timezone.utc), ["passed", "failed", "failing"])
     # state is a single value per request (API rejects comma lists with 422)
+    assert any("state=passed" in u for u in urls)
     assert any("state=failed" in u for u in urls)
+    assert any("state=failing" in u for u in urls)
     assert any("state=failing" in u for u in urls)
     assert not any("%2C" in u or "%2c" in u for u in urls)
     assert seen["auth"] == "Bearer test-token"
     assert len(jobs) == 1
     assert jobs[0].job_id == "01a065ff-efc4-425c-b9c6-cb2e6f92fafe"
+    assert jobs[0].state == "passed"
     assert jobs[0].build_number == 87028

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from .analyzer import AnalysisResult
 from .github import PRInfo
@@ -176,13 +177,15 @@ def _fmt_window(start: datetime, end: datetime) -> str:
 
 def render_report(report_date: str, records: list[ReportRecord],
                   raw_failed: int | None = None,
-                  window: tuple[datetime, datetime] | None = None) -> str:
-    """records = failed jobs kept after dedup (same PR -> newest only)."""
+                  window: tuple[datetime, datetime] | None = None,
+                  raw_runs: int | None = None) -> str:
+    """records = analyzed target-job runs kept after dedup (same PR -> newest)."""
     included = [r for r in records if r.analysis and r.analysis.included_in_table]
     no_break = [r for r in records
                 if r.analysis and not r.analysis.included_in_table
                 and r.analysis.section_found and not r.analysis.analyzer_error
-                and r.analysis.anomaly_reason != "parse_failed"]
+                and r.analysis.anomaly_reason != "parse_failed"
+                and (r.analysis.result != "PASS" or r.state != "passed")]
     anomalies = [r for r in records
                  if r.analysis and not r.analysis.included_in_table
                  and (not r.analysis.section_found
@@ -192,18 +195,21 @@ def render_report(report_date: str, records: list[ReportRecord],
     findings_total = sum(len(r.analysis.findings) for r in included)
     review_total = sum(len(r.analysis.review_findings)
                        for r in records if r.analysis)
-    raw = raw_failed if raw_failed is not None else len(records)
-    stats = (f"统计：本时间窗内共发现 {raw} 次 Ascend NPU Test 失败运行，"
-             + (f"同 PR 多次执行仅保留最新一次（去重后 {len(records)} 次），"
-                if raw != len(records) else "")
+    total_runs = raw_runs if raw_runs is not None else len(records)
+    failures = (raw_failed if raw_failed is not None else
+                sum(r.state != "passed" for r in records))
+    stats = (f"统计：本时间窗内共采集 {total_runs} 次已完成的 Ascend NPU Test 运行"
+             f"（其中 CI 失败 {failures} 次），"
+             + (f"同 PR 多次执行仅保留最新一次（去重后分析 {len(records)} 次），"
+                if total_runs != len(records) else "")
              + f"其中 {len(included)} 次确认存在 break（已收录表格），"
              f"提取 break 条目 {findings_total} 条、待复核项 {review_total} 条。")
     if window:
         w0 = window[0].astimezone(timezone.utc).strftime("%Y-%m-%d")
         w1 = window[1].astimezone(timezone.utc).strftime("%Y-%m-%d")
-        title = f"# Ascend NPU Test 失败报告 — {w0} ~ {w1}"
+        title = f"# Ascend NPU Test 兼容性分析报告 — {w0} ~ {w1}"
     else:
-        title = f"# Ascend NPU Test 失败报告 — {report_date}"
+        title = f"# Ascend NPU Test 兼容性分析报告 — {report_date}"
     out = [title, ""]
     if window:
         out.append(_fmt_window(window[0], window[1]))
@@ -216,7 +222,7 @@ def render_report(report_date: str, records: list[ReportRecord],
         out.append(_main_table(included).rstrip("\n"))
         out.append("")
     if no_break:
-        out.append("## 附录 A：失败但无 break 的记录（不进主表，仅备查）")
+        out.append("## 附录 A：待复核或 CI 失败但无 break 的记录（仅备查）")
         out.append("")
         out.append(_appendix_a(no_break).rstrip("\n"))
         out.append("")
@@ -239,8 +245,7 @@ def parse_break_table(path: Path) -> list[dict]:
     Returns a list of dicts, each containing the 11 columns of the break
     table.  Returns an empty list when the report has no break section.
     """
-    from pathlib import Path as _P
-    text = _P(path).read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
     lines = text.split("\n")
 
     # Locate the "## Break 汇总表" heading
@@ -343,9 +348,9 @@ def render_merged_report(report_date: str, rows: list[dict],
     if window:
         w0 = window[0].astimezone(timezone.utc).strftime("%Y-%m-%d")
         w1 = window[1].astimezone(timezone.utc).strftime("%Y-%m-%d")
-        title = f"# Ascend NPU Test 失败汇总报告 — {w0} ~ {w1}"
+        title = f"# Ascend NPU Test break 汇总报告 — {w0} ~ {w1}"
     else:
-        title = f"# Ascend NPU Test 失败汇总报告 — {report_date}"
+        title = f"# Ascend NPU Test break 汇总报告 — {report_date}"
     out = [title, ""]
     if window:
         out.append(_fmt_window(window[0], window[1]))

@@ -38,7 +38,7 @@ def test_main_table_only_breaks_and_pr_status(breaks_log):
         _rec(102, 22350, "Closed"),
     ]
     out = render_report("2026-09-04", records)
-    assert "# Ascend NPU Test 失败报告 — 2026-09-04" in out
+    assert "# Ascend NPU Test 兼容性分析报告 — 2026-09-04" in out
     assert "仅收录确认存在 break 的记录" in out
     assert "**Merged**" in out and "**Open**" in out and "**Closed**" in out
     # REVIEW record must not appear in the main table section
@@ -65,7 +65,7 @@ def test_same_pr_merged_into_one_row(breaks_log):
 
 def test_empty_report_contains_stats_only():
     out = render_report("2026-09-04", [])
-    assert "共发现 0 次" in out
+    assert "共采集 0 次已完成" in out
     assert "Break 汇总表" not in out
 
 
@@ -124,10 +124,29 @@ def _prinfo(n: int):
 
 def test_report_stats_line_with_dedup():
     records = [_rec(300, 55123, "Open")]
-    out = render_report("2026-09-04", records, raw_failed=71)
-    assert "共发现 71 次" in out
+    out = render_report("2026-09-04", records, raw_runs=71, raw_failed=11)
+    assert "共采集 71 次已完成" in out
+    assert "CI 失败 11 次" in out
     assert "仅保留最新一次" in out
-    assert "去重后 1 次" in out
+    assert "去重后分析 1 次" in out
+
+
+def test_passed_pass_run_is_not_reported_as_failure_or_appendix():
+    record = _rec(301, 55124, "Open", result="PASS", state="passed")
+    out = render_report("2026-09-04", [record], raw_runs=1, raw_failed=0)
+    assert "共采集 1 次已完成" in out
+    assert "CI 失败 0 次" in out
+    assert "附录 A" not in out
+    assert "#301" not in out
+
+
+def test_passed_run_with_break_is_in_main_table_without_job_status_column():
+    record = _rec(302, 55125, "Open", state="passed")
+    out = render_report("2026-09-04", [record], raw_runs=1, raw_failed=0)
+    main = out.split("## 附录 A")[0]
+    assert "#302" in main
+    assert "| Job 状态 |" not in main
+    assert "CI 失败 0 次" in out
 
 
 def test_report_shows_query_window():
@@ -137,7 +156,7 @@ def test_report_shows_query_window():
               datetime(2026, 9, 4, 0, 0, tzinfo=timezone.utc))
     out = render_report("2026-09-04", records, window=window)
     # title stays readable while the full timestamp remains in the query window
-    assert "# Ascend NPU Test 失败报告 — 2026-09-03 ~ 2026-09-04" in out
+    assert "# Ascend NPU Test 兼容性分析报告 — 2026-09-03 ~ 2026-09-04" in out
     assert "查询时间窗：2026-09-03 00:00Z ~ 2026-09-04 00:00Z（UTC）" in out
     assert "2026-09-03 08:00 ~ 2026-09-04 08:00（北京时间，UTC+8）" in out
 
@@ -294,7 +313,7 @@ def test_render_merged_report(tmp_path):
               datetime(2026, 9, 7, tzinfo=timezone.utc))
     out = render_merged_report("2026-09-07", rows,
                                raw_failed=5, window=window)
-    assert "失败汇总报告" in out
+    assert "break 汇总报告" in out
     assert "汇总期间共 5 条 break 记录" in out
     assert "## Break 汇总表" in out
     assert "附录" not in out
